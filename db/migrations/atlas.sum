@@ -1,6 +1,7 @@
-h1:/Cyb6xluEsd7yASVmLW4+m8ZRJgc2dW6vhwsV30sq6Y=
-001_init_schema.sql h1:6YWa3jfKSMAoGzNJcJ8YxDoc84VsdYrNXlOBuNsOWt4=
-002_seed_and_index.sql h1:MzG4J8UxHTpXUAvNqx4hmHc3nTiH0sdLb3csZv4Huac=
-003_add_note_column.sql h1:wkuEnUSLvYGK+RFXmbbNQWI5SOOR/mp4pSfXtM6hYjc=
-004_shipments_table.sql h1:lImKIl5uE/FmJTPdUTv9PpIYTpU96fQULK2Ls04nwR4=
-20261006145117_add_order_status_enum.sql h1:A+x/9/uZfGZ4np5PxPaXE6JEX1PepOJtQWsHtBv3zT4=
+h1:271usX0GQDDzBHqAvTp0AXJtYBoNbDOUWooGFDXU3Ig=
+001_init_schema.sql h1:j82hHqtab4FXTsmjE6/EXV139OJeSUeuEnnWf9QMTig=
+002_seed_and_index.sql h1:mEeVPSG/bnJPXV1woLZOXIBiiPzFgdNJNX3CATX8sf4=
+003_add_note_column.sql h1:212FKADqt5mObZdAH5Zlys3s2OTOKbJbU/7AglTl+RM=
+004_shipments_table.sql h1:kHLWY7CAN9SK3ixDDvLwReZBfEXJd6n9UQ2JKsOrxWQ=
+20261006145117_add_order_status_enum.sql h1:wT4bYv9h8MrgAqw6ATKsApGEC/0uxn7zILJgViMOuPo=
+20261006152349_add_customers_region.sql h1:LWoHOciKnEPcR2ttsxX/ainRSWojADvS+COG6+pPpzE=

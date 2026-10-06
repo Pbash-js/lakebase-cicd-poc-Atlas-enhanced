@@ -25,6 +25,11 @@ table "customers" {
     null    = false
     default = "active"
   }
+  column "region" {
+    type    = text
+    null    = false
+    default = "global"
+  }
   primary_key {
     columns = [column.customer_id]
   }
