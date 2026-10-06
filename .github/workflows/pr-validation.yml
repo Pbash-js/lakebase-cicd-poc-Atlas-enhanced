@@ -1,7 +1,7 @@
 name: PR Validation — Lakebase branch
 on:
   pull_request:
-    paths: ["db/migrations/**", "db/objects/**", "db/rbac/**", "db/tests/**", "scripts/**", "databricks.yml", ".github/workflows/**"]
+    paths: ["db/migrations/**", "db/schema/**", "db/objects/**", "db/rbac/**", "db/tests/**", "scripts/**", "databricks.yml", ".github/workflows/**"]
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -66,6 +66,19 @@ jobs:
             sleep 2
           done
           echo "Endpoint did not become ready" && exit 1
+
+      - name: Atlas CE Plan Check (desired state vs migrations)
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
+          DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
+          PR_ID: ${{ github.event.pull_request.number }}
+          ATLAS_BIN: /tmp/atlas
+        run: |
+          curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-latest
+          chmod +x /tmp/atlas
+          ./scripts/gen_migration.sh --check
 
       - name: Run Migrations (Cookbook runner — exactly-once + drift check)
         env:

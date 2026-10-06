@@ -1,0 +1,6 @@
+h1:/Cyb6xluEsd7yASVmLW4+m8ZRJgc2dW6vhwsV30sq6Y=
+001_init_schema.sql h1:6YWa3jfKSMAoGzNJcJ8YxDoc84VsdYrNXlOBuNsOWt4=
+002_seed_and_index.sql h1:MzG4J8UxHTpXUAvNqx4hmHc3nTiH0sdLb3csZv4Huac=
+003_add_note_column.sql h1:wkuEnUSLvYGK+RFXmbbNQWI5SOOR/mp4pSfXtM6hYjc=
+004_shipments_table.sql h1:lImKIl5uE/FmJTPdUTv9PpIYTpU96fQULK2Ls04nwR4=
+20261006145117_add_order_status_enum.sql h1:A+x/9/uZfGZ4np5PxPaXE6JEX1PepOJtQWsHtBv3zT4=

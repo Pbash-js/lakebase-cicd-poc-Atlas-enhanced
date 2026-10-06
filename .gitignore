@@ -1,5 +1,2 @@
-.databrickscfg
-__pycache__/
-*.pyc
-.env
-_probe.py
+atlas.exe
+scratch_url.txt

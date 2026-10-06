@@ -2,7 +2,7 @@ name: CD Promotion — replay to production
 on:
   push:
     branches: [main]
-    paths: ["db/migrations/**", "db/objects/**", "db/rbac/**", "databricks.yml", ".github/workflows/**"]
+    paths: ["db/migrations/**", "db/schema/**", "db/objects/**", "db/rbac/**", "databricks.yml", ".github/workflows/**"]
 concurrency:
   group: cd-production
   cancel-in-progress: false   # serialize production migrations — never race
