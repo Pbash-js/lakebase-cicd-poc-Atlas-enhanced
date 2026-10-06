@@ -34,4 +34,5 @@ jobs:
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
-        run: ./scripts/deploy_db.sh   # TARGET_BRANCH defaults to production
+          TARGET_BRANCH: production
+        run: ./scripts/deploy_db.sh
