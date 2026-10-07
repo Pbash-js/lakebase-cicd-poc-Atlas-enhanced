@@ -10,9 +10,13 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # Atlas CE auto-generates migrations and commits them to the PR branch
+      contents: write     # Atlas CE auto-generates migrations and commits them to the PR branch
+      pull-requests: write # and comments the generated SQL on the PR
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}   # commit on the PR branch, not the merge ref
+          fetch-depth: 0
 
       - name: Infra-file integrity gate
         env:
@@ -112,7 +116,7 @@ jobs:
           git config user.email "atlas-ce-bot@users.noreply.github.com"
           git add db/migrations
           git commit -m "Atlas CE: generate migration from db/schema/schema.sql"
-          git push || echo "push failed (concurrent update) — next run re-plans"
+          git push origin HEAD:refs/heads/${{ github.event.pull_request.head.ref }} || echo "push failed (concurrent update) — next run re-plans"
           {
             echo "### Atlas CE auto-generated a migration"
             echo ""
