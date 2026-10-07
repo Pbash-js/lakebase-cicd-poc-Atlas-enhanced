@@ -80,7 +80,7 @@ jobs:
           chmod +x /tmp/atlas
           ./scripts/gen_migration.sh --check
 
-      - name: Run Migrations (Cookbook runner — exactly-once + drift check)
+      - name: Run Migrations (Atlas CE apply — exactly-once)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}

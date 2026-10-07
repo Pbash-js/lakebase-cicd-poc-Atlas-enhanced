@@ -9,7 +9,7 @@ def _conn():
 
 def test_migrations_exactly_once():
     with _conn() as c:
-        n = c.execute("SELECT count(*) FROM schema_migrations").fetchone()[0]
+        n = c.execute("SELECT count(*) FROM atlas_schema_revisions.atlas_schema_revisions").fetchone()[0]
         assert n >= 2
 
 def test_function_and_view():
