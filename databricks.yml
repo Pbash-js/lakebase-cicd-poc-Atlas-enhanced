@@ -31,3 +31,5 @@ resources:
       replace_existing: true        # REQUIRED: adopt the implicit primary endpoint
 
 # cd trigger: also fires on workflow changes
+
+# Atlas CE: stage 1 = atlas migrate apply (CE ledger)
