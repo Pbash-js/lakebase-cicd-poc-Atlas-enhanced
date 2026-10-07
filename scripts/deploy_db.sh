@@ -78,7 +78,7 @@ if [ "$TARGET_BRANCH" != "production" ]; then
   for i in $(seq 1 30); do
     STATE="$(databricks postgres get-endpoint "projects/${LAKEBASE_PROJECT}/branches/${TARGET_BRANCH}/endpoints/primary" -o json \
       | python -c "import sys,json;print(json.load(sys.stdin)['status']['current_state'])" 2>/dev/null || true)"
-    [ "$STATE" = "ACTIVE" ] && break
+    [ "$STATE" = "ACTIVE" -o "$STATE" = "IDLE" ] && break
     [ "$i" = "30" ] && { echo "Endpoint did not become ready in time" >&2; exit 1; }
     sleep 2
   done

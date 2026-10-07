@@ -62,7 +62,8 @@ jobs:
             STATE=$(databricks postgres get-endpoint \
               "projects/${{ secrets.LAKEBASE_PROJECT }}/branches/$PR_BRANCH/endpoints/primary" \
               --output json | jq -r '.status.current_state // empty')
-            [ "$STATE" = "ACTIVE" ] && exit 0
+            # ACTIVE = ready; IDLE = suspended (scale-to-zero), wakes on first connection
+            [ "$STATE" = "ACTIVE" -o "$STATE" = "IDLE" ] && exit 0
             sleep 2
           done
           echo "Endpoint did not become ready" && exit 1
@@ -80,7 +81,7 @@ jobs:
           chmod +x /tmp/atlas
           ./scripts/gen_migration.sh --check
 
-      - name: Run Migrations (Cookbook runner — exactly-once + drift check)
+      - name: Run Migrations (Atlas CE apply — exactly-once)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}

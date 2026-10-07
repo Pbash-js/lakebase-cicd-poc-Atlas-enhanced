@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Wraps Atlas Community Edition `atlas migrate diff` against a scratch
-# database inside the target Lakebase branch. Planner-only: Atlas plans,
-# our exactly-once runner (apply_migrations.py) applies. Atlas never writes
+# database inside the target Lakebase branch. Desired state is a single
+# declarative SQL file: db/schema/schema.sql. Atlas plans; Atlas-native
+# apply (scripts/apply_migrations_atlas.sh) applies. Atlas never writes
 # to the application schema, and the live database is never diffed.
 #
 # The dev database gets WIPED on every diff (Atlas rebuilds it), so it must
@@ -92,7 +93,7 @@ if [ "$CHECK" = 1 ]; then
   if command -v cygpath >/dev/null 2>&1; then TMPD=$(cygpath -m "$TMPD"); fi
   "$ATLAS_BIN" migrate diff "$NAME" \
     --dir "file://${TMPD}" \
-    --to "file://${REPO}/db/schema" \
+    --to "file://${REPO}/db/schema/schema.sql" \
     --dev-url "$DEV_URL" >/dev/null
   BASE=$(ls db/migrations | grep -v atlas.sum | sort | tail -1)
   NEW=$(ls "$TMPD" | grep -v atlas.sum | sort | tail -1)
@@ -106,7 +107,7 @@ if [ "$CHECK" = 1 ]; then
 else
   "$ATLAS_BIN" migrate diff "$NAME" \
     --dir "file://${REPO}/db/migrations" \
-    --to "file://${REPO}/db/schema" \
+    --to "file://${REPO}/db/schema/schema.sql" \
     --dev-url "$DEV_URL"
   echo "✓ migration written to db/migrations (review, then commit)"
 fi
