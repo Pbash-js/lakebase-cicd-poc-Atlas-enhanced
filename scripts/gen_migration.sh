@@ -15,8 +15,11 @@
 #   --check    do not write; run the diff in a throwaway copy of
 #              db/migrations and FAIL if Atlas would generate a new file.
 #
-# Env: TARGET_BRANCH (or PR_ID) selects the branch; databricks CLI must be
-# authenticated (CI: DATABRICKS_HOST + DATABRICKS_TOKEN; local: auth login).
+# Interactive default (no env): prompts for a dev branch name (default
+# dev-<user>-<date>), creates it off production with a 1-day TTL if missing,
+# runs the diff, and leaves the generated file in db/migrations to commit.
+# CI sets TARGET_BRANCH or PR_ID. databricks CLI must be authenticated
+# (CI: DATABRICKS_HOST + DATABRICKS_TOKEN; local: auth login).
 # LAKEBASE_PROJECT is required (prompted interactively, hard-failed in CI).
 set -euo pipefail
 
@@ -29,19 +32,27 @@ for a in "$@"; do
   esac
 done
 
+INTERACTIVE=0
+[ -t 0 ] && INTERACTIVE=1
+
 if [ -n "${TARGET_BRANCH:-}" ]; then
   BRANCH="$TARGET_BRANCH"
 elif [ -n "${PR_ID:-}" ]; then
   BRANCH="pr-${PR_ID}"
 else
-  : "${TARGET_BRANCH:?set TARGET_BRANCH (e.g. pr-1) or PR_ID}"
+  _DEFAULT="dev-$(whoami | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | cut -c1-12)-$(date +%Y%m%d)"
+  read -r -p "Dev branch name [${_DEFAULT}]: " _TB || _TB=""
+  BRANCH="${_TB:-$_DEFAULT}"
 fi
 
 if [ -z "${LAKEBASE_PROJECT:-}" ]; then
-  if [ -t 0 ]; then
+  if [ "$INTERACTIVE" = 1 ]; then
     read -r -p "Lakebase project id: " LAKEBASE_PROJECT
   fi
   : "${LAKEBASE_PROJECT:?set LAKEBASE_PROJECT}"
+fi
+if [ -z "${DATABRICKS_PG_USER:-}" ] && [ "$INTERACTIVE" = 1 ]; then
+  read -r -p "Lakebase Postgres role: " DATABRICKS_PG_USER
 fi
 
 ATLAS_BIN="${ATLAS_BIN:-atlas}"
@@ -49,7 +60,17 @@ command -v "$ATLAS_BIN" >/dev/null 2>&1 || { echo "✗ atlas CLI not found (set 
 command -v python >/dev/null 2>&1 || { echo "✗ python not found"; exit 1; }
 
 ENDPOINT="projects/${LAKEBASE_PROJECT}/branches/${BRANCH}/endpoints/primary"
-echo "▶ atlas plan check: branch=${BRANCH} project=${LAKEBASE_PROJECT}"
+
+# Dev branches are created on demand (1-day TTL) so the loop stays one command.
+if [ -n "${TARGET_BRANCH:-}" ] || [ -n "${PR_ID:-}" ]; then
+  : # CI provisions its own branches
+elif ! databricks postgres get-branch "projects/${LAKEBASE_PROJECT}/branches/${BRANCH}" -o json >/dev/null 2>&1; then
+  echo "▶ creating dev branch ${BRANCH} off production (1-day TTL)"
+  databricks postgres create-branch "projects/${LAKEBASE_PROJECT}" "${BRANCH}" \
+    --json "{\"spec\":{\"source_branch\":\"projects/${LAKEBASE_PROJECT}/branches/production\",\"ttl\":\"86400s\"}}" >/dev/null
+fi
+
+echo "▶ atlas plan: branch=${BRANCH} project=${LAKEBASE_PROJECT}"
 
 HOST="$(databricks postgres get-endpoint "$ENDPOINT" --output json \
   | python -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")"
@@ -109,5 +130,10 @@ else
     --dir "file://${REPO}/db/migrations" \
     --to "file://${REPO}/db/schema/schema.sql" \
     --dev-url "$DEV_URL"
-  echo "✓ migration written to db/migrations (review, then commit)"
+  # Normalize to LF and re-hash: atlas.sum must match the git BLOBS, not a
+  # Windows CRLF working tree (autocrlf checkouts would break CI verification).
+  find db/migrations -name '*.sql' -exec sed -i 's/\r$//' {} +
+  "$ATLAS_BIN" migrate hash --dir "file://${REPO}/db/migrations"
+  echo "✓ generated: $(ls db/migrations | grep -v atlas.sum | sort | tail -1)"
+  echo "  commit it with the schema edit: git add db && git commit"
 fi

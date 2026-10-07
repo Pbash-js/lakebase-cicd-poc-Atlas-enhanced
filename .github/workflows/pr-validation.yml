@@ -29,6 +29,18 @@ jobs:
           echo "::error::PR touches .github/, scripts/ or databricks.yml — second-pair-of-eyes rule: add the 'infra-approved' label after review"
           exit 1
 
+      - name: Migration immutability gate (generated files are never edited)
+        run: |
+          git fetch -q origin ${{ github.event.pull_request.base.sha }}
+          EXIT=0
+          for f in $(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }} -- db/migrations); do
+            if git cat-file -e ${{ github.event.pull_request.base.sha }}:"$f" 2>/dev/null; then
+              echo "::error::$f already exists on the base branch: generated migrations are immutable — fix is a NEW migration (edit db/schema/schema.sql and regenerate)"
+              EXIT=1
+            fi
+          done
+          exit $EXIT
+
       - name: Install Databricks CLI + Python deps
         uses: databricks/setup-cli@main
         with:
@@ -76,10 +88,26 @@ jobs:
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           PR_ID: ${{ github.event.pull_request.number }}
           ATLAS_BIN: /tmp/atlas
+          GH_TOKEN: ${{ github.token }}
         run: |
           curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-latest
           chmod +x /tmp/atlas
-          ./scripts/gen_migration.sh --check
+          OUT=$(mktemp)
+          if ./scripts/gen_migration.sh --check 2>&1 | tee "$OUT"; then
+            exit 0
+          fi
+          # Autopopulate: post the exact SQL Atlas would generate as a PR comment.
+          {
+            echo "### Atlas CE plan — db/schema/schema.sql does not match db/migrations"
+            echo ""
+            echo "Run \`./scripts/gen_migration.sh\` locally and commit the generated file. Planned SQL:"
+            echo ""
+            echo '```sql'
+            grep -vE '^(▶|::error::|--- Atlas would generate:|✓)' "$OUT"
+            echo '```'
+          } > plan.md
+          gh pr comment ${{ github.event.pull_request.number }} --body-file plan.md || true
+          exit 1
 
       - name: Run Migrations (Atlas CE apply — exactly-once)
         env:
