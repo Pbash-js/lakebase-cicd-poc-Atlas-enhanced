@@ -40,6 +40,7 @@ jobs:
           git fetch -q origin ${{ github.base_ref }}
           EXIT=0
           for f in $(git diff --name-only origin/${{ github.base_ref }} HEAD -- db/migrations); do
+            [ "$f" = "db/migrations/atlas.sum" ] && continue   # checksum file is rewritten by every generation; Atlas verifies it at apply time
             if git cat-file -e origin/${{ github.base_ref }}:"$f" 2>/dev/null; then
               echo "::error::$f already exists on the base branch: generated migrations are immutable — fix is a NEW migration (edit db/schema/schema.sql and regenerate)"
               EXIT=1
