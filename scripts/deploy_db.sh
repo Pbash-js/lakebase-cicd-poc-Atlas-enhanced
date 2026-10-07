@@ -91,11 +91,8 @@ TOKEN="$(databricks postgres generate-database-credential "$ENDPOINT" --output j
 
 cd "$(dirname "$0")/.."
 
-echo "▶ 1/3 migrations (exactly-once, drift-checked)"
-python scripts/apply_migrations.py \
-  --host "${HOST}" --port 5432 --dbname databricks_postgres \
-  --user "${DATABRICKS_PG_USER}" --password "${TOKEN}" \
-  --sslmode require --migrations-dir db/migrations
+echo "▶ 1/3 migrations (Atlas-native apply, exactly-once, atlas.sum + revision checksums)"
+ATLAS_BIN="${ATLAS_BIN:-atlas}" ./scripts/apply_migrations_atlas.sh "${HOST}" "${DATABRICKS_PG_USER}" "${TOKEN}"
 
 echo "▶ 2/3 objects (idempotent replay)"
 python scripts/apply_objects.py \

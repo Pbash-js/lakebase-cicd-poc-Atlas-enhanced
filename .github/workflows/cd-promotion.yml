@@ -28,11 +28,17 @@ jobs:
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: databricks bundle deploy -t prod
 
-      - name: Apply Migrations + Objects to Production (exactly-once, drift-checked)
+      - name: Install Atlas CE
+        run: |
+          curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-latest
+          chmod +x /tmp/atlas
+
+      - name: Apply Migrations + Objects to Production (Atlas-native ledger, exactly-once)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           TARGET_BRANCH: production
+          ATLAS_BIN: /tmp/atlas
         run: ./scripts/deploy_db.sh

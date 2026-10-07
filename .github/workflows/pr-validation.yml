@@ -87,4 +87,5 @@ jobs:
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           TARGET_BRANCH: pr-${{ github.event.pull_request.number }}
+          ATLAS_BIN: /tmp/atlas
         run: ./scripts/deploy_db.sh
