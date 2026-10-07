@@ -119,7 +119,7 @@ if [ "$CHECK" = 1 ]; then
   BASE=$(ls db/migrations | grep -v atlas.sum | sort | tail -1)
   NEW=$(ls "$TMPD" | grep -v atlas.sum | sort | tail -1)
   if [ "$NEW" != "$BASE" ]; then
-    echo "::error::desired state (db/schema) drifted from db/migrations — run gen_migration.sh locally and commit the generated file"
+    echo "::error::desired state (db/schema) drifted from db/migrations — CI will auto-generate the migration; or run gen_migration.sh locally"
     echo "--- Atlas would generate: ---"
     cat "$TMPD/$NEW"
     exit 1
