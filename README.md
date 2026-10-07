@@ -40,10 +40,13 @@ databricks auth login --profile free-edition
 
 ### Schema change (tables, columns, indexes, enums)
 1. Edit `db/schema/schema.sql`.
-2. Run `./scripts/gen_migration.sh` — one interactive command: it names a dev
-   branch (`dev-<user>-<date>`, created off production with a 1-day TTL if
-   missing), builds the scratch DB, and writes the generated migration.
-3. Commit both the schema edit and the generated file, push, open a PR.
+2. Commit, push, open a PR. That's all.
+3. CI detects the drift, **generates the migration itself**, commits it to
+   the PR branch, and re-runs validation. The generated SQL appears both in
+   the PR diff and as a PR comment for review.
+
+(Optionally generate locally with `./scripts/gen_migration.sh` — same
+result; CI converges either way.)
 
 ### Code-object change (functions, procedures, views, triggers)
 1. Edit the object file in `db/objects/<layer>/` (CREATE OR REPLACE).
@@ -66,7 +69,7 @@ databricks auth login --profile free-edition
 | --- | --- |
 | Infra-file integrity | PR touches `.github/`, `scripts/` or `databricks.yml` without the `infra-approved` label |
 | Migration immutability | PR edits or deletes an existing file in `db/migrations/` (adding new ones is the only allowed change) |
-| Atlas plan check | `db/schema/schema.sql` and `db/migrations/` disagree. CI posts the exact planned SQL as a PR comment; regenerate locally and commit it |
+| Atlas plan check | CI regenerates from `schema.sql`; on drift it auto-commits the generated migration and re-runs (fails only if generation itself errors) |
 | Atlas apply | `atlas.sum` mismatch (tampered history), or a migration fails against the PR branch |
 | Tests | pytest suite fails against the PR branch |
 

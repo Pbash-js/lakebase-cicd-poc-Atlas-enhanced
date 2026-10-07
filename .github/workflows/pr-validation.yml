@@ -9,6 +9,8 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # Atlas CE auto-generates migrations and commits them to the PR branch
     steps:
       - uses: actions/checkout@v4
 
@@ -80,7 +82,7 @@ jobs:
           done
           echo "Endpoint did not become ready" && exit 1
 
-      - name: Atlas CE Plan Check (desired state vs migrations)
+      - name: Atlas CE Plan (desired state vs migrations — auto-generate on drift)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -94,17 +96,33 @@ jobs:
           chmod +x /tmp/atlas
           OUT=$(mktemp)
           if ./scripts/gen_migration.sh --check 2>&1 | tee "$OUT"; then
+            echo "✓ db/schema/schema.sql matches db/migrations"
             exit 0
           fi
-          # Autopopulate: post the exact SQL Atlas would generate as a PR comment.
+          # Drift: generate the migration here, commit it to the PR branch,
+          # comment, and re-run. The dev only edits schema.sql and pushes.
+          F=$(TARGET_BRANCH="pr-${{ github.event.pull_request.number }}" ./scripts/gen_migration.sh atlas_planned 2>&1 | grep -oE '[0-9]{14}_[a-z0-9_]+\.sql' | tail -1 || true)
+          NEWFILE="db/migrations/$F"
+          if [ -z "$F" ] || [ ! -f "$NEWFILE" ]; then
+            echo "::error::plan drift detected but generation failed:"
+            cat "$OUT"
+            exit 1
+          fi
+          git config user.name "atlas-ce-bot"
+          git config user.email "atlas-ce-bot@users.noreply.github.com"
+          git add db/migrations
+          git commit -m "Atlas CE: generate migration from db/schema/schema.sql"
+          git push || echo "push failed (concurrent update) — next run re-plans"
           {
-            echo "### Atlas CE plan — db/schema/schema.sql does not match db/migrations"
+            echo "### Atlas CE auto-generated a migration"
             echo ""
-            echo "Run \`./scripts/gen_migration.sh\` locally and commit the generated file. Planned SQL:"
+            echo "Committed \`${NEWFILE}\` to this PR from \`db/schema/schema.sql\`. Planned SQL:"
             echo ""
             echo '```sql'
-            grep -vE '^(▶|::error::|--- Atlas would generate:|✓)' "$OUT"
+            sed -n '1,200p' "$NEWFILE"
             echo '```'
+            echo ""
+            echo "_Re-running validation._"
           } > plan.md
           gh pr comment ${{ github.event.pull_request.number }} --body-file plan.md || true
           exit 1
