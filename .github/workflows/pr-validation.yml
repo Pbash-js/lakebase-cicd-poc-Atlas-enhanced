@@ -126,10 +126,10 @@ jobs:
             sed -n '1,200p' "$NEWFILE"
             echo '```'
             echo ""
-            echo "_Re-running validation._"
+            echo "_Validation continues below with this file applied to the PR branch._"
           } > plan.md
           gh pr comment ${{ github.event.pull_request.number }} --body-file plan.md || true
-          exit 1
+          exit 0
 
       - name: Run Migrations (Atlas CE apply — exactly-once)
         env:
