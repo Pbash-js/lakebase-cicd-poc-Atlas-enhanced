@@ -94,11 +94,11 @@ jobs:
         run: |
           curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-latest
           chmod +x /tmp/atlas
-          OUT=$(mktemp)
-          if ./scripts/gen_migration.sh --check 2>&1 | tee "$OUT"; then
+          if OUT=$(./scripts/gen_migration.sh --check 2>&1); then
             echo "✓ db/schema/schema.sql matches db/migrations"
             exit 0
           fi
+          echo "$OUT"
           # Drift: generate the migration here, commit it to the PR branch,
           # comment, and re-run. The dev only edits schema.sql and pushes.
           F=$(TARGET_BRANCH="pr-${{ github.event.pull_request.number }}" ./scripts/gen_migration.sh atlas_planned 2>&1 | grep -oE '[0-9]{14}_[a-z0-9_]+\.sql' | tail -1 || true)
