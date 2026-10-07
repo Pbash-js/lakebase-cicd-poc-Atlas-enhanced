@@ -16,7 +16,8 @@ CREATE TABLE orders (
     status      TEXT NOT NULL DEFAULT 'new',
     total_cents BIGINT NOT NULL DEFAULT 0,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    note        TEXT NOT NULL DEFAULT ''
+    note        TEXT NOT NULL DEFAULT '',
+    tag         TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX idx_orders_customer ON orders (customer_id);
 
