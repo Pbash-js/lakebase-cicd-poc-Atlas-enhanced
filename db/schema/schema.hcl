@@ -105,6 +105,11 @@ table "shipments" {
     type = timestamptz
     null = true
   }
+  column "priority" {
+    type    = integer
+    null    = false
+    default = 5
+  }
   primary_key {
     columns = [column.shipment_id]
   }
