@@ -48,6 +48,29 @@ jobs:
           done
           exit $EXIT
 
+      - name: Destructive-change gate (regex lint on NEW migrations; not a parser)
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        run: |
+          git fetch -q origin ${{ github.base_ref }}
+          EXIT=0
+          for f in $(git diff --name-only origin/${{ github.base_ref }} HEAD -- db/migrations); do
+            [ "$f" = "db/migrations/atlas.sum" ] && continue
+            git cat-file -e origin/${{ github.base_ref }}:"$f" 2>/dev/null && continue   # only NEW files
+            if grep -inE 'DROP[[:space:]]+(TABLE|SCHEMA)|TRUNCATE([[:space:]]|;|$)' "$f"; then
+              echo "::error::$f contains destructive DDL (DROP TABLE/SCHEMA, TRUNCATE): add the 'destructive-approved' label after review, or remove it"
+              EXIT=1
+            fi
+            # CREATE INDEX CONCURRENTLY is impossible under --tx-mode all, so this warns only
+            if grep -iE 'CREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX' "$f" | grep -viqE 'CONCURRENTLY'; then
+              echo "::warning::$f uses a non-concurrent CREATE INDEX: locks writes for the index build duration on large tables"
+            fi
+          done
+          case " $LABELS " in
+            *" destructive-approved "*) echo "destructive-approved label present — destructive DDL allowed"; EXIT=0;;
+          esac
+          exit $EXIT
+
       - name: Install Databricks CLI + Python deps
         uses: databricks/setup-cli@main
         with:
@@ -56,19 +79,23 @@ jobs:
       - name: Install Python deps
         run: pip3 install "psycopg[binary]" pytest
 
-      - name: Provision Ephemeral PR Branch (idempotent — reuse on PR update)
+      - name: Recreate Ephemeral PR Branch (fresh fork of CURRENT production every run)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           PR_ID: ${{ github.event.pull_request.number }}
         run: |
           PR_BRANCH="pr-${PR_ID}"
-          if databricks postgres get-branch "projects/${{ secrets.LAKEBASE_PROJECT }}/branches/$PR_BRANCH" --output json >/dev/null 2>&1; then
-            echo "Branch $PR_BRANCH already exists — reusing"
-          else
-            databricks postgres create-branch "projects/${{ secrets.LAKEBASE_PROJECT }}" "$PR_BRANCH" \
-              --json '{"spec":{"source_branch":"projects/${{ secrets.LAKEBASE_PROJECT }}/branches/production","ttl":"86400s"}}'
-          fi
+          BR_PATH="projects/${{ secrets.LAKEBASE_PROJECT }}/branches/${PR_BRANCH}"
+          echo "▶ recreating ${PR_BRANCH} off current production (24h TTL)"
+          databricks postgres delete-branch "$BR_PATH" 2>/dev/null || echo "  (no existing branch)"
+          for i in $(seq 1 15); do   # deletion is async; wait until it is gone
+            databricks postgres get-branch "$BR_PATH" --output json >/dev/null 2>&1 || break
+            [ "$i" = 15 ] && { echo "::error::old ${PR_BRANCH} did not delete in time"; exit 1; }
+            sleep 2
+          done
+          databricks postgres create-branch "projects/${{ secrets.LAKEBASE_PROJECT }}" "$PR_BRANCH" \
+            --json '{"spec":{"source_branch":"projects/${{ secrets.LAKEBASE_PROJECT }}/branches/production","ttl":"86400s"}}'
 
       - name: Wait for Endpoint Readiness
         env:
@@ -110,7 +137,7 @@ jobs:
           NEWFILE="db/migrations/$F"
           if [ -z "$F" ] || [ ! -f "$NEWFILE" ]; then
             echo "::error::plan drift detected but generation failed:"
-            cat "$OUT"
+            printf '%s\n' "$OUT"
             exit 1
           fi
           git config user.name "atlas-ce-bot"

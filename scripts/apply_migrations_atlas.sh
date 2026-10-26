@@ -54,4 +54,8 @@ PYEOF
   fi
 fi
 
-"$ATLAS_BIN" migrate apply --url "$URL" --dir "$DIR" --lock-timeout 60s
+# --tx-mode all: the entire batch applies in ONE transaction, so a failure
+# halfway through the pending set leaves NOTHING applied (no half-applied
+# migrations). Caveat: DDL that cannot run in a transaction block (e.g.
+# CREATE INDEX CONCURRENTLY) is impossible under this mode.
+"$ATLAS_BIN" migrate apply --url "$URL" --dir "$DIR" --lock-timeout 60s --tx-mode all
