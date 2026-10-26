@@ -267,3 +267,20 @@ run through both paths on a Lakebase branch.
 - [Databricks Docs: Typical project setup with Asset Bundles (replace_existing, implicit resources)](https://docs.databricks.com/aws/en/oltp/projects/dabs-typical-project)
 - [Databricks Docs: Lakebase authentication (generate-database-credential)](https://docs.databricks.com/aws/en/oltp/projects/authentication)
 - [Databricks Blog: Branching databases like code (Glaspoort, per-PR flow)](https://www.databricks.com/blog/branching-databases-code-cicd-pattern-lakebase-production-glaspoort)
+
+## Open items
+
+Rows already closed in this repo are not listed (per-PR branch recreation,
+one-transaction object replay, trigger recreate, retired-objects manifest).
+
+| # | Change | Open item |
+| --- | --- | --- |
+| 1 | Production tests | Split the suite: read-only smoke tests that can run against production in CD, and data-writing integration tests that run on dev branches only |
+| 2 | CI auto-commit | The plan-check bot currently commits the generated migration and continues validating. Flip it to fail the check instead, so a failed push fails visibly and the dev commits the migration themselves |
+| 3 | Credentials | Replace the shared static `DATABRICKS_TOKEN` with OIDC workload federation and three service principals (SP-CI, SP-CD, SP-monitor) |
+| 4 | Baseline | Replace automatic baseline detection in `apply_migrations_atlas.sh` with an explicit, recorded operator step |
+| 5 | Change detection | Compare against the merge base (three-dot diff) in the gates so older PRs do not fail falsely after main moves |
+| 6 | Recovery | Create a pre-deploy recovery branch (PITR fork) in cd-promotion before applying to production |
+| 7 | Bundle targets | One bundle with four targets (Dev, QA, Stage, Prod); the Lakebase project is created once per workspace, since bundles cannot adopt an existing project |
+| 8 | Tooling | Pin the Atlas version in workflows (the CLI action is pinned to 1.17.0; Atlas installs `latest`) and mask runtime credentials in logs |
+| 9 | Ownership | Assign CODEOWNERS to a team instead of individuals; mark the `production` Lakebase branch protected |
