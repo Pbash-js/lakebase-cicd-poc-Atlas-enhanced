@@ -78,7 +78,7 @@ jobs:
           EXIT=0
           for f in $(git --no-pager diff --no-renames --name-only "origin/${BASE}...HEAD" -- db/migrations); do
             [ "$f" = "db/migrations/atlas.sum" ] && continue   # checksum file is rewritten by every generation; Atlas verifies it at apply time
-            if git cat-file -e "origin/${BASE}:"$f" 2>/dev/null; then
+            if git cat-file -e "origin/${BASE}:$f" 2>/dev/null; then
               echo "::error::$f already exists on the base branch: generated migrations are immutable — fix is a NEW migration (edit db/schema/schema.sql and regenerate)"
               EXIT=1
             fi
@@ -94,7 +94,7 @@ jobs:
           EXIT=0
           for f in $(git --no-pager diff --no-renames --name-only "origin/${BASE}...HEAD" -- db/migrations); do
             [ "$f" = "db/migrations/atlas.sum" ] && continue
-            git cat-file -e "origin/${BASE}:"$f" 2>/dev/null && continue   # only NEW files
+            git cat-file -e "origin/${BASE}:$f" 2>/dev/null && continue   # only NEW files
             if grep -inE 'DROP[[:space:]]+(TABLE|SCHEMA|COLUMN)|TRUNCATE([[:space:]]|;|$)' "$f"; then
               echo "::error::$f contains destructive DDL (DROP TABLE/SCHEMA/COLUMN, TRUNCATE): add the 'destructive-approved' label after review, or remove it"
               EXIT=1
