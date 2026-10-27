@@ -6,6 +6,8 @@ on:
 jobs:
   cleanup:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write        # OIDC (SP-CI: owns the ephemeral pr-* lifecycle)
     steps:
       - name: Install Databricks CLI (pinned — postgres API surface changes across versions)
         uses: databricks/setup-cli@main
@@ -15,7 +17,8 @@ jobs:
       - name: Delete orphaned PR branches
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_AUTH_TYPE: github-oidc
+          DATABRICKS_CLIENT_ID: ${{ vars.SP_CI_CLIENT_ID }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
         run: |
           # CLI has no list-branches — use the Postgres REST API

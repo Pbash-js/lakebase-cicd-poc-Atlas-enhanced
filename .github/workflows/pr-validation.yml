@@ -10,6 +10,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     permissions:
+      id-token: write      # OIDC: exchange the GitHub JWT for a Databricks token (SP-CI)
       pull-requests: write # comments the generated SQL on the PR; no contents:write — CI never commits
     steps:
       - uses: actions/checkout@v4
@@ -81,7 +82,8 @@ jobs:
       - name: Recreate Ephemeral PR Branch (fresh fork of CURRENT production every run)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_AUTH_TYPE: github-oidc
+          DATABRICKS_CLIENT_ID: ${{ vars.SP_CI_CLIENT_ID }}
           PR_ID: ${{ github.event.pull_request.number }}
         run: |
           PR_BRANCH="pr-${PR_ID}"
@@ -99,7 +101,8 @@ jobs:
       - name: Wait for Endpoint Readiness
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_AUTH_TYPE: github-oidc
+          DATABRICKS_CLIENT_ID: ${{ vars.SP_CI_CLIENT_ID }}
           PR_ID: ${{ github.event.pull_request.number }}
         run: |
           PR_BRANCH="pr-${PR_ID}"
@@ -116,9 +119,10 @@ jobs:
       - name: Atlas CE Plan (desired state vs migrations — FAIL on drift; CI never commits)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_AUTH_TYPE: github-oidc
+          DATABRICKS_CLIENT_ID: ${{ vars.SP_CI_CLIENT_ID }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
-          DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
+          DATABRICKS_PG_USER: ${{ vars.SP_CI_CLIENT_ID }}
           PR_ID: ${{ github.event.pull_request.number }}
           ATLAS_BIN: /tmp/atlas
           GH_TOKEN: ${{ github.token }}
@@ -148,9 +152,10 @@ jobs:
       - name: Run Migrations (Atlas CE apply — exactly-once)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_AUTH_TYPE: github-oidc
+          DATABRICKS_CLIENT_ID: ${{ vars.SP_CI_CLIENT_ID }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
-          DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
+          DATABRICKS_PG_USER: ${{ vars.SP_CI_CLIENT_ID }}
           TARGET_BRANCH: pr-${{ github.event.pull_request.number }}
           ATLAS_BIN: /tmp/atlas
           TEST_SUITE: all

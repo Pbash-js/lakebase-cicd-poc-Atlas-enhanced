@@ -249,14 +249,29 @@ continuous monitoring become requirements. The deck's concrete trial is a
 `numeric(10,2)` -> `numeric(14,4)` widening under a dependent view + function,
 run through both paths on a Lakebase branch.
 
-## GitHub secrets (Settings -> Secrets and variables -> Actions)
+## GitHub configuration (Settings)
+
+Repository variables (Actions -> Variables, not secrets; client IDs are not credentials):
+
+| Variable | Value |
+| --- | --- |
+| SP_CI_CLIENT_ID | SP-CI application ID (PR validation + branch GC) |
+| SP_CD_CLIENT_ID | SP-CD application ID (CD promotion) |
+| SP_MONITOR_CLIENT_ID | SP-MONITOR application ID (drift monitor) |
+
+Repository secrets:
 
 | Secret | Example |
 | --- | --- |
 | DATABRICKS_HOST | https://dbc-xxxxxxxx.cloud.databricks.com |
-| DATABRICKS_TOKEN | PAT or SP token with Lakebase access |
 | LAKEBASE_PROJECT | core-app-db |
-| DATABRICKS_PG_USER | your Lakebase Postgres role (user email or SP client id) |
+
+Auth is OIDC workload federation: each workflow exchanges the GitHub JWT
+for a ~1h Databricks token via a federation policy on its SP
+(`DATABRICKS_AUTH_TYPE=github-oidc`, `permissions: id-token: write`). No
+static tokens. Full identity map, required federation subjects, the
+`app_pipeline` ownership model, and per-workspace setup:
+[docs/IDENTITIES.md](docs/IDENTITIES.md).
 
 ## Sources
 
@@ -274,14 +289,15 @@ run through both paths on a Lakebase branch.
 Closed since this section was written: production test split (smoke vs
 integration), CI fail-on-drift (no auto-commit), explicit baseline,
 three-dot merge-base diffs, pre-deploy recovery branch in CD, pinned Atlas
-version, credential masking. Decisions taken: GC stays weekly-only (no
-PR-close deletion for now), dev-branch TTL stays 7 days.
+version, credential masking, OIDC with three service principals
+(docs/IDENTITIES.md), bundle targets for Dev/QA/Stage/Prod (dev/qa/stage
+are placeholder stubs until the workspaces exist; prod is live).
+Decisions taken: GC stays weekly-only (no PR-close deletion for now),
+dev-branch TTL stays 7 days, ownership review skipped for the POC.
 
 | # | Change | Open item |
 | --- | --- | --- |
-| 1 | Credentials | Replace the shared static `DATABRICKS_TOKEN` with OIDC workload federation and three service principals (SP-CI, SP-CD, SP-monitor): each SP gets a GitHub federation policy (issuer `token.actions.githubusercontent.com`, environment-based subject), workspace access and a least-privilege Lakebase Postgres role; workflows switch to `DATABRICKS_AUTH_TYPE=github-oidc` |
-| 2 | Bundle targets | One bundle with four targets (Dev, QA, Stage, Prod); the Lakebase project is created once per workspace, since bundles cannot adopt an existing project. Needs the workspaces to exist (platform team) |
-| 3 | Ownership | Assign CODEOWNERS to a team instead of individuals; mark the `production` Lakebase branch protected |
+| 1 | Ownership | Assign CODEOWNERS to a team instead of individuals; mark the `production` Lakebase branch protected (skipped for this POC by decision) |
 
 Carried from v1, still open: RBAC as code, AI-impact review (AI Gateway),
 multi-environment promotion with the platform team.
