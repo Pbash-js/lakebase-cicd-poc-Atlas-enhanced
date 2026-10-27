@@ -91,8 +91,8 @@ jobs:
           for f in $(git diff --name-only origin/${{ github.base_ref }}...HEAD -- db/migrations); do
             [ "$f" = "db/migrations/atlas.sum" ] && continue
             git cat-file -e origin/${{ github.base_ref }}:"$f" 2>/dev/null && continue   # only NEW files
-            if grep -inE 'DROP[[:space:]]+(TABLE|SCHEMA)|TRUNCATE([[:space:]]|;|$)' "$f"; then
-              echo "::error::$f contains destructive DDL (DROP TABLE/SCHEMA, TRUNCATE): add the 'destructive-approved' label after review, or remove it"
+            if grep -inE 'DROP[[:space:]]+(TABLE|SCHEMA|COLUMN)|TRUNCATE([[:space:]]|;|$)' "$f"; then
+              echo "::error::$f contains destructive DDL (DROP TABLE/SCHEMA/COLUMN, TRUNCATE): add the 'destructive-approved' label after review, or remove it"
               EXIT=1
             fi
             # CREATE INDEX CONCURRENTLY is impossible under --tx-mode all, so this warns only
@@ -161,7 +161,7 @@ jobs:
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           PR_ID: ${{ github.event.pull_request.number }}
-          ATLAS_BIN: /tmp/atlas
+          ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
           GH_TOKEN: ${{ github.token }}
         run: |
           curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-v1.3.5
@@ -195,6 +195,6 @@ jobs:
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           TARGET_BRANCH: pr-${{ github.event.pull_request.number }}
-          ATLAS_BIN: /tmp/atlas
+          ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
           TEST_SUITE: all
         run: ./scripts/deploy_db.sh

@@ -15,6 +15,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Pro mode: official Atlas install with the bot token; CE uses the pinned download.
+      - name: Atlas Cloud setup (Pro only)
+        if: vars.ATLAS_EDITION == 'pro'
+        uses: ariga/setup-atlas@v0
+        with:
+          cloud-token: ${{ secrets.ATLAS_CLOUD_TOKEN }}
 
       - name: Install Databricks CLI (pinned)
         uses: databricks/setup-cli@main
@@ -38,7 +44,7 @@ jobs:
           ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
-          ATLAS_BIN: /tmp/atlas
+          ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
         run: |
           if ./scripts/check_drift.sh > drift_report.txt 2>&1; then
             echo "drift=false" >> "$GITHUB_OUTPUT"

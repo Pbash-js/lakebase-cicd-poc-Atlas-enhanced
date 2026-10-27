@@ -21,6 +21,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pro mode: official Atlas install with the bot token (grant cached for
+      # offline access). The script steps use this binary via ATLAS_BIN above.
+      - name: Atlas Cloud setup (Pro only)
+        if: vars.ATLAS_EDITION == 'pro'
+        uses: ariga/setup-atlas@v0
+        with:
+          cloud-token: ${{ secrets.ATLAS_CLOUD_TOKEN }}
+
       - name: Resolve target branch
         run: |
           TB="${{ github.event.inputs.target_branch }}"
@@ -115,6 +123,7 @@ jobs:
         with:
           dir: 'file://db/migrations'
           url: '${{ steps.cred.outputs.url }}'
+          tx-mode: all   # one transaction for the whole pending batch (CE script parity)
 
       - name: Replay objects + run smoke tests (Pro track)
         if: vars.ATLAS_EDITION == 'pro'
@@ -125,7 +134,7 @@ jobs:
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           TARGET_BRANCH: ${{ env.TARGET_BRANCH }}
-          ATLAS_BIN: /tmp/atlas
+          ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
           SKIP_MIGRATIONS: "1"
         run: ./scripts/deploy_db.sh
 
@@ -140,5 +149,5 @@ jobs:
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           TARGET_BRANCH: ${{ env.TARGET_BRANCH }}
-          ATLAS_BIN: /tmp/atlas
+          ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
         run: ./scripts/deploy_db.sh
