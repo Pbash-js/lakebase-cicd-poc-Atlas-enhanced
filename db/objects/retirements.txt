@@ -8,3 +8,9 @@
 -- Examples (remove the leading -- to activate):
 -- DROP VIEW IF EXISTS v_old_totals;
 -- DROP FUNCTION IF EXISTS fn_total_for_customer(BIGINT);
+
+-- 2026-10-27: fn_total_for_customer return type BIGINT -> INTEGER.
+-- v_order_totals depends on the function, so it is dropped first and
+-- recreated by the 04_views replay.
+DROP VIEW IF EXISTS v_order_totals;
+DROP FUNCTION IF EXISTS fn_total_for_customer(BIGINT);
