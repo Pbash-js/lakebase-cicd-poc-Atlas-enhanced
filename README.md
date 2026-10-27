@@ -1,18 +1,29 @@
-# Lakebase CI/CD - Atlas Community Edition migrator (reference POC)
+# Lakebase CI/CD — dual-engine migrator (Atlas Pro primary, CE fallback)
 
-Drop-in migration pipeline for Lakebase Postgres. Atlas Community Edition
-(Apache-2.0, no login, no data leaves the workspace) plans migrations from a
-single declarative SQL schema and applies them with an exactly-once ledger.
-GitHub Actions runs CI on every PR and CD to production on merge. Code
-objects (functions, procedures, views, triggers) stay hand-owned in this
-repo because objects are Pro-only in Atlas; everything CE cannot do natively
-is closed here with verified repo code instead.
+Migration pipeline for Lakebase Postgres with two switchable engines:
+
+- **Atlas Pro track (default target architecture)**: the official Atlas
+  GitHub Actions do the work — `setup-atlas`, `migrate/lint` on every PR,
+  `migrate/push` to the Schema Registry on merge, and `migrate/apply` to the
+  database. Atlas owns planning, linting, versioning and deployment; this
+  repo provides the desired state, the Lakebase topology and the credential
+  plumbing.
+- **Atlas CE track (fallback, today's default)**: the same repo mechanics
+  with verified repo code closing every CE gap (transactional applies,
+  trigger recreation, retirement manifest, destructive gate, drift probe).
+
+The engine is one runtime setting: `ATLAS_EDITION=pro|ce` (see
+[Atlas edition switch](#atlas-edition-switch-ce--pro)). One binary, no fork:
+a migration applied by either track lands in the same
+`atlas_schema_revisions` ledger. GitHub Actions runs CI on every PR and CD
+on merge.
 
 ```
-SOURCE (Git)                DEPLOYMENT (Atlas CE + DABs)         DATABASE (Lakebase)
-db/schema/schema.sql   ->   gen_migration.sh  (plan, per PR)  ->  pr-<n> branch (rehearsal, fresh fork every run)
-db/objects/ (code SQL) ->   apply_migrations_atlas.sh         ->  production (on merge)
-                            deploy_db.sh (entrypoint)             drift-probe (daily monitor)
+SOURCE (Git)                DEPLOYMENT                                        DATABASE (Lakebase)
+db/schema/schema.sql   ->   PRO:   setup-atlas · migrate/lint · migrate/push  ->  pr-<n> rehearsal (fresh fork every run)
+db/objects/ (code SQL)        + migrate/apply (official action)                ->  production (on merge)
+                              CE:    gen_migration.sh · apply_migrations_atlas  ->  drift-probe (daily monitor)
+                                     deploy_db.sh (CE entrypoint)                   recovery-<run_id> (pre-deploy PITR fork)
 ```
 
 ## How to read this README / how to use this repo
@@ -95,22 +106,39 @@ path (PR to `main`, then CD).
 | `.github/workflows/schema-drift-monitor.yml` | Daily scheduled drift probe; on drift it opens/updates a `schema-drift` issue and fails. |
 | `.github/workflows/cleanup-orphans.yml` | GC for leftover ephemeral branches. |
 
-## What is NOT in this repo
+## Engine ownership: what Atlas Pro runs, what stays repo code (CE fallback)
 
-So nobody looks for something that is not here. These are deliberate
-exclusions or Atlas Pro territory.
+The design follows Atlas Pro: wherever the official CLI/actions cover a
+concern, the Pro track uses them natively and the bespoke code below is
+CE-track-only. "CE track" in the table means the fallback still provides it
+when running on the community edition.
 
-| Not here | Why | Where it would come from |
+| Concern | Pro track | CE track (fallback) |
 | --- | --- | --- |
-| Native lint analyzers (`atlas migrate lint`) | Pro-only (confirmed against CE 1.3.5). Approximated by the regex destructive-change gate below | Atlas Pro |
-| Object dependency graph | CE cannot model views/functions/triggers. Layer prefixes only approximate ordering | Atlas Pro |
-| Managed schema monitoring (alerts, changelog, ERD, lineage) | Approximated by the daily drift probe + GitHub issue | Atlas Pro ($39/db/mo) |
-| Migrations + objects in ONE transaction | They run as separate processes (`atlas migrate apply`, then `apply_objects.py`); each is individually atomic, the pair is not. Fixing it cleanly means replacing Atlas's runner | Atlas Pro, or a custom runner |
-| RBAC as code (`db/rbac/`, `apply_rbac.py`) | Stripped from this POC; the drift probe's `drift_ignore.txt` whitelists the legacy `grant_*` helpers still on the project | Backlog item |
-| OIDC workload federation | Uses a static `DATABRICKS_TOKEN` secret today | Backlog item |
-| QA / STAGE / multi-workspace promotion | One project, dev rehearsal + production. Bundle targets for more workspaces are a platform-team discussion | Backlog item |
-| Pro-tier declarative objects (functions/views/triggers in `schema.sql`) | They live in `db/objects/` and replay; they NEVER enter `schema.sql`, or the CE plan check breaks | Atlas Pro |
-| AI-impact review (AI Gateway pattern) | Cookbook extension, not implemented | Backlog item |
+| Plan / generate migration | `ariga/atlas-action/migrate/diff` (official) | `scripts/gen_migration.sh` (template0 scratch in the branch) |
+| Safety lint | `migrate/lint` action: native analyzers, PR report | Regex destructive gate + `destructive-approved` label |
+| Apply | `migrate/apply` action with a minted 1-hour credential | `scripts/apply_migrations_atlas.sh` (`--tx-mode all`) |
+| Cloud versioning | `migrate/push` → [Schema Registry](https://pragmatix.atlasgo.cloud/dirs/4294967296) | Git only (`atlas.sum`) |
+| Drift detection | object-aware `atlas schema diff` (one command, no probe branch) | probe-branch replay + definition compare + ghost check |
+| Rollback | `atlas migrate down` (`scripts/rollback_migration.sh`, Pro-gated) | recovery branch (pre-deploy PITR fork) or forward migration |
+| Objects (functions/views/triggers) | declarative: part of the desired state, planned by Atlas | layered replay + `retirements.txt` |
+| Managed Schema Monitoring | Atlas Cloud product (connect the prod DB in the portal) | daily probe + `schema-drift` issue |
+| RBAC as code | not in either track | not in either track (backlog) |
+
+Deliberately bespoke under BOTH tracks: none for the Pro track's core path.
+The only Lakebase-specific glue is credential minting (1-hour OAuth
+credential via `generate-database-credential`, below) and the DAB bundle —
+that is the platform's own deployment surface, not an Atlas concern.
+
+## Database platform facts (verified live)
+
+- Lakebase Postgres runs **PostgreSQL 17.11** (not 18) — the CI dev-database
+  service container and `docker://postgres/17/dev` dev-urls match it.
+- Credentials: no static DB URL exists or should. The pattern is the
+  documented Lakebase service-principal flow: long-lived SP OAuth secret
+  (up to 730 days) → 1-hour workspace token → 1-hour database credential,
+  username = SP client id = the SP's Postgres role. See
+  [docs/IDENTITIES.md](docs/IDENTITIES.md).
 
 ## Developer loop
 
@@ -226,10 +254,13 @@ LAKEBASE_PROJECT=<id> DATABRICKS_PG_USER=<role> \
 SOURCE_BRANCH=<branch> PROBE_BRANCH=drift-probe ./scripts/check_drift.sh
 ```
 
-## CE vs Pro: what is closed here, what remains
+## CE vs Pro: decision made, CE is the fallback
 
-Every claim below was verified live on Atlas CE 1.3.5 against the Lakebase
-project (see the deck for the full comparison, cost model and decision gate).
+The decision this document previously left open is now implemented: the
+**Pro track is the target architecture** (official actions own lint,
+versioning and apply); CE remains the verified fallback that runs whenever
+`ATLAS_EDITION=ce` (today's default until the Pro license lands — trial
+expires 2026-11-03). Every CE closure below stays live and untouched.
 
 | CE gap | Closed in this repo? | How / residual limit |
 | --- | --- | --- |
@@ -298,6 +329,38 @@ portal.ariga.io). The CLI login session token is NOT accepted as
 `ATLAS_TOKEN` (verified live). Until that token is added, keep
 `ATLAS_EDITION=ce`; locally, an `atlas login` session unlocks everything.
 
+### Pro track: official apply + Lakebase credentials
+
+The Pro track uses the official `ariga/atlas-action/migrate/apply@v1`. It
+needs a Postgres URL; Lakebase has no static DB URL by design. The
+established pattern (Databricks docs: [external apps connect via
+API](https://docs.databricks.com/aws/en/oltp/projects/external-apps-manual-api),
+[OAuth M2M](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-m2m)):
+
+```
+SP OAuth secret (up to 730 days, workspace access on)
+  -> M2M client-credentials flow: 1-hour workspace token
+  -> generate-database-credential: 1-hour Postgres credential
+  -> username = SP client id = that SP's Postgres role (app_pipeline member)
+```
+
+The long-lived artifact is the SP secret only; the database password is
+self-minted per run. The CD workflow already mints the credential in a
+pre-step (`Mint Lakebase database credential`) and hands the URL to the
+action. Today the workspace token mints for its own identity; once the SP
+OAuth secrets are generated (one console click per SP, steps in
+[docs/IDENTITIES.md](docs/IDENTITIES.md)) the same steps run as SP-CI /
+SP-CD / SP-MONITOR and the static `DATABRICKS_TOKEN` is retired. This
+replaces the previously-planned OIDC federation switchover (which needs
+account-level API, unavailable on Free Edition): OAuth M2M secrets work at
+workspace level on Free Edition.
+
+Platform facts (verified live): Lakebase Postgres runs **PostgreSQL 17.11**
+(dev containers pinned to `postgres:17` to match). `cd-promotion` accepts a
+manual dispatch with a rehearsal-branch target to test the Pro apply path
+without production; manual runs are hard-refused when the target is
+`production`.
+
 ### Alignment with the official Atlas GitHub Actions guide
 
 Source: [atlasgo.io/guides/ci-platforms/github-versioned](https://atlasgo.io/guides/ci-platforms/github-versioned).
@@ -306,9 +369,9 @@ Source: [atlasgo.io/guides/ci-platforms/github-versioned](https://atlasgo.io/gui
 | --- | --- | --- |
 | Bot token as `ATLAS_CLOUD_TOKEN` secret | done (repo secret; token value lives only in the ignored `.env.py`) | official naming kept |
 | `ariga/setup-atlas@v0` with `cloud-token` | `pr-validation.yml`, Pro-gated; grant cached for offline access | official install + auth path in CI |
-| `ariga/atlas-action/migrate/lint@v1` | `pr-validation.yml`, Pro-gated, `dir-name: lakebase-cicd-poc`, dev-database = postgres:15 service container | native lint report posted on the PR by Atlas Cloud |
+| `ariga/atlas-action/migrate/lint@v1` | `pr-validation.yml`, Pro-gated, `dir-name: lakebase-cicd-poc`, dev-database = postgres:17 service container (matches Lakebase PG 17.11) | native lint report posted on the PR by Atlas Cloud |
 | `migrate/push` to the Schema Registry on merge | `cd-promotion.yml`, Pro-gated; registry repo: [pragmatix.atlasgo.cloud/dirs/4294967296](https://pragmatix.atlasgo.cloud/dirs/4294967296) | official step 2 (cloud versioning of the dir) |
-| `ariga/atlas-action/migrate/apply@v1` with static `DB_URL` | intentionally NOT used: `apply_migrations_atlas.sh` | Lakebase credentials are minted per run (1-hour OAuth) and production is guarded; no static DB URL exists. Apply keeps `--tx-mode all` + the advisory-lock ledger |
+| `ariga/atlas-action/migrate/apply@v1` | `cd-promotion.yml`, Pro-gated, against a 1-hour minted Lakebase credential (see "Pro track: official apply" above); CE keeps `apply_migrations_atlas.sh` | Lakebase has no static `DB_URL`: the credential is minted per run by the documented SP OAuth pattern |
 | Local `docker://postgres` dev-database | Lakebase template0 scratch DB inside the branch | no Docker dependency; dev DB is the same engine/version as production |
 
 ## Sources

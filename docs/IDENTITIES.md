@@ -1,15 +1,47 @@
-# Deploy identities: service principals, roles, federation (setup + usage)
+# Deploy identities: service principals, credentials, federation (setup + usage)
 
-STATUS: STUB / FORWARD PLAN. The workflows below still authenticate with
-the static `DATABRICKS_TOKEN` secret. The SP setup is complete (principals,
-Lakebase roles, Postgres grants) but the OIDC switchover is BLOCKED: the
-service-principal federation policy API is account-level, which the Free
-Edition workspace token cannot reach. Keep this document as the runbook for
-when account access (or a paid tier) is available.
+STATUS: SP setup complete (principals, Lakebase roles, Postgres grants via
+the `app_pipeline` group). Credential switchover is ONE console step away:
+generate an OAuth secret per SP (below). Workflows still run on the static
+`DATABRICKS_TOKEN` today; the mint step in cd-promotion is already written
+so the switchover changes secrets, not code.
 
-Three Databricks service principals are designated to run this pipeline.
-Humans use `databricks auth login` (their own identity); the SPs exist only
-for CI/CD.
+## The credential pattern (documented, established)
+
+Source: Databricks docs —
+[external apps connect via API](https://docs.databricks.com/aws/en/oltp/projects/external-apps-manual-api)
+and
+[OAuth M2M](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-m2m).
+
+```
+SP OAuth secret (long-lived, up to 730 days, Workspace access enabled)
+  -> client-credentials M2M flow -> 1-hour workspace token
+  -> generate-database-credential -> 1-hour Postgres credential
+  -> connect as username = SP client id (the SP's Postgres role)
+```
+
+The Postgres password is NEVER long-lived: the SP self-mints a fresh
+credential per run. This is the pattern the CD workflow implements
+("Mint Lakebase database credential" step). It also replaces the
+previously-planned OIDC federation switchover: federation policies need
+account-level API (unavailable on Free Edition), OAuth M2M secrets work at
+workspace level on Free Edition.
+
+### The one-time console step (per SP, needs admin UI)
+
+1. Workspace → Settings → Identity and access → Service principals → open
+   the SP (client ids below) → **Secrets** tab → **Generate secret**.
+2. Lifetime: 730 days. Scopes: `sql` (and `all-apis` if the mint API needs
+   the wider scope).
+3. Confirm "Workspace access" is enabled on the SP's Configurations tab.
+4. Store as GitHub secrets:
+   - `DATABRICKS_CLIENT_ID` = the SP's application (client) id
+   - `DATABRICKS_CLIENT_SECRET` = the generated secret
+5. The Databricks CLI then self-authenticates via
+   `DATABRICKS_AUTH_TYPE=client-credentials` (or the SDK equivalent) and the
+   minted database credential belongs to that SP's Postgres role.
+
+Identity map (client id → role):
 
 ## The three identities
 

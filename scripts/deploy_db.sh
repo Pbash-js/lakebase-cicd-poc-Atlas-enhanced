@@ -93,7 +93,11 @@ echo "::add-mask::${TOKEN}"   # never leak the runtime credential in logs
 cd "$(dirname "$0")/.."
 
 echo "▶ 1/3 migrations (Atlas-native apply, exactly-once, atlas.sum + revision checksums)"
-ATLAS_BIN="${ATLAS_BIN:-atlas}" ./scripts/apply_migrations_atlas.sh "${HOST}" "${DATABRICKS_PG_USER}" "${TOKEN}"
+if [ -n "${SKIP_MIGRATIONS:-}" ]; then
+  echo "  skipped (SKIP_MIGRATIONS=1 — migrations were applied by the official Atlas action)"
+else
+  ATLAS_BIN="${ATLAS_BIN:-atlas}" ./scripts/apply_migrations_atlas.sh "${HOST}" "${DATABRICKS_PG_USER}" "${TOKEN}"
+fi
 
 echo "▶ 2/3 objects (idempotent replay)"
 python scripts/apply_objects.py \
