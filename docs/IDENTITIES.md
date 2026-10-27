@@ -21,24 +21,28 @@ secrets, they are not credentials): `SP_CI_CLIENT_ID`, `SP_CD_CLIENT_ID`,
 
 Each SP needs a service-principal federation policy (account-level, created
 once by an account admin). The policy SUBJECT must exactly match the JWT
-`sub` claim GitHub issues for the workflow. Required subjects:
+`sub` claim GitHub issues for the workflow. IMPORTANT: on this GitHub
+account the `sub` carries enterprise decorations (login@org-id,
+repo@repo-id). The required subjects, verbatim:
 
-| SP | Subject (`repo:<org>/<repo>:...`) |
+| SP | Subject |
 | --- | --- |
-| SP-CI | `repo:Pbash-js/lakebase-cicd-poc-Atlas-enhanced:pull_request` AND `repo:Pbash-js/lakebase-cicd-poc-Atlas-enhanced:ref:refs/heads/main` (scheduled GC runs on main) |
-| SP-CD | `repo:Pbash-js/lakebase-cicd-poc-Atlas-enhanced:environment:production` |
-| SP-MONITOR | `repo:Pbash-js/lakebase-cicd-poc-Atlas-enhanced:ref:refs/heads/main` (scheduled runs run on main) |
+| SP-CI | `repo:Pbash-js@78909321/lakebase-cicd-poc-Atlas-enhanced@1407457562:pull_request` (PR runs) AND `repo:Pbash-js@78909321/lakebase-cicd-poc-Atlas-enhanced@1407457562:ref:refs/heads/main` (scheduled GC runs) |
+| SP-CD | `repo:Pbash-js@78909321/lakebase-cicd-poc-Atlas-enhanced@1407457562:environment:production` |
+| SP-MONITOR | `repo:Pbash-js@78909321/lakebase-cicd-poc-Atlas-enhanced@1407457562:ref:refs/heads/main` (scheduled runs run on main) |
 
-Issuer for all: `https://token.actions.githubusercontent.com`. Audiences:
-the Databricks account ID (or GitHub's `token.actions.githubusercontent.com`
-if the policy was created that way).
+Issuer for all: `https://token.actions.githubusercontent.com`.
+
+If a workflow fails with `github-oidc auth: ... TOKEN_INVALID (Ensure a
+valid federation policy has been configured)`, the error echoes the exact
+`subject:` the token carried: set the policy subject to that string.
 
 Create/update with:
 ```
 databricks account service-principal-federation-policy create <SP-account-id> --json '{
   "oidc_policy": {
     "issuer": "https://token.actions.githubusercontent.com",
-    "subject": "repo:Pbash-js/lakebase-cicd-poc-Atlas-enhanced:environment:production"
+    "subject": "repo:Pbash-js@78909321/lakebase-cicd-poc-Atlas-enhanced@1407457562:environment:production"
   }
 }'
 ```
