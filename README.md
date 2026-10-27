@@ -1,5 +1,7 @@
 # Lakebase CI/CD: dual-engine migrator (Atlas Pro primary, CE fallback)
 
+Architecture and design rationale: [docs/DESIGN.md](docs/DESIGN.md). This README is the operating manual.
+
 Migration pipeline for Lakebase Postgres with two switchable engines:
 
 - **Atlas Pro track (default target architecture)**: the official Atlas
