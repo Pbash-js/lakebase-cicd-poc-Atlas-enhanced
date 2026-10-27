@@ -6,6 +6,7 @@ on:
 jobs:
   cleanup:
     runs-on: ubuntu-latest
+    permissions:
     steps:
       - name: Install Databricks CLI (pinned — postgres API surface changes across versions)
         uses: databricks/setup-cli@main

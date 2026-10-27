@@ -125,6 +125,16 @@ if [ "$CHECK" = 1 ]; then
     exit 1
   fi
   echo "✓ plan check clean: db/migrations matches db/schema"
+  # Pro mode: the plan check doubles as the lint gate (migrate lint is
+  # Pro-only; it replays the dir on the same scratch dev DB and parses the
+  # SQL for destructive / blocking / data-dependent changes).
+  if [ "${ATLAS_EDITION:-ce}" = "pro" ]; then
+    echo "▶ atlas lint (Pro): analyzing the latest migrations"
+    "$ATLAS_BIN" migrate lint --latest 1 \
+      --dir "file://${REPO}/db/migrations" \
+      --dev-url "$DEV_URL"
+    echo "✓ lint clean"
+  fi
 else
   "$ATLAS_BIN" migrate diff "$NAME" \
     --dir "file://${REPO}/db/migrations" \

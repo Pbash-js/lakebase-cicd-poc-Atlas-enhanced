@@ -3,6 +3,12 @@ on:
   push:
     branches: [main]
     paths: ["db/migrations/**", "db/schema/**", "db/objects/**", "db/rbac/**", "databricks.yml", ".github/workflows/**"]
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: "Rehearsal branch to deploy to instead of production (Atlas-native path test). NEVER set this to production."
+        required: false
+        default: ""
 concurrency:
   group: cd-production
   cancel-in-progress: false   # serialize production migrations — never race
@@ -11,8 +17,19 @@ jobs:
   promote:
     runs-on: ubuntu-latest
     environment: production   # put required reviewers here
+    permissions:
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve target branch
+        run: |
+          TB="${{ github.event.inputs.target_branch }}"
+          if [ -z "$TB" ]; then TB="production"; fi
+          if [ "$TB" = "production" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "::error::manual runs never touch production — pass a rehearsal branch or push to main"
+            exit 1
+          fi
+          echo "TARGET_BRANCH=$TB" >> "$GITHUB_ENV"
 
       - name: Install Databricks CLI
         uses: databricks/setup-cli@main
@@ -23,22 +40,105 @@ jobs:
         run: pip3 install "psycopg[binary]" pytest
 
       - name: Deploy Infrastructure Assets via DABs
+        if: env.TARGET_BRANCH == 'production'
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
         run: databricks bundle deploy -t prod
 
-      - name: Install Atlas CE
+      - name: Install Atlas CE (pinned)
         run: |
-          curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-latest
+          curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-v1.3.5
           chmod +x /tmp/atlas
 
-      - name: Apply Migrations + Objects to Production (Atlas-native ledger, exactly-once)
+      # Pro mode: push the migration directory to the Atlas Cloud Schema
+      # Registry (official CI guide step 2) so every deploy is versioned in
+      # the cloud. Skipped under CE.
+      - name: Push migration dir to Atlas Cloud registry (Pro only)
+        if: vars.ATLAS_EDITION == 'pro'
+        uses: ariga/atlas-action/migrate/push@v1
+        with:
+          dir: 'file://db/migrations'
+          dev-url: 'docker://postgres/17/dev?search_path=public'
+          dir-name: 'lakebase-cicd-poc'
+
+      # Credential minting — the established Lakebase service-principal pattern:
+      # long-lived SP OAuth secret -> 1h workspace token -> 1h database
+      # credential, username = SP client id = the SP's Postgres role. Today the
+      # workspace token mints for its own identity; once the SP OAuth secrets
+      # exist (docs/IDENTITIES.md) DATABRICKS_CLIENT_ID/SECRET replace the
+      # static token and the credential belongs to SP-CD's role.
+      - name: Mint Lakebase database credential (1-hour OAuth)
+        id: cred
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
+        run: |
+          EP="projects/${LAKEBASE_PROJECT}/branches/${TARGET_BRANCH}/endpoints/primary"
+          HOST=$(databricks postgres get-endpoint "$EP" -o json | python3 -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")
+          TOK=$(databricks postgres generate-database-credential "$EP" -o json | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+          echo "::add-mask::${TOK}"
+          ENC=$(python3 -c "import urllib.parse;print(urllib.parse.quote('${{ secrets.DATABRICKS_PG_USER }}', safe=''))")
+          echo "url=postgres://${ENC}:${TOK}@${HOST}:5432/databricks_postgres?sslmode=require" >> "$GITHUB_OUTPUT"
+
+      - name: Pre-deploy recovery branch (PITR fork of production)
+        if: env.TARGET_BRANCH == 'production'
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
+          LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
+        run: |
+          RB="recovery-${{ github.run_id }}"
+          BR_PATH="projects/${{ secrets.LAKEBASE_PROJECT }}/branches/${RB}"
+          echo "▶ creating ${RB} off production (24h TTL) — rollback point for this deploy"
+          databricks postgres delete-branch "$BR_PATH" 2>/dev/null || true
+          for i in $(seq 1 15); do
+            databricks postgres get-branch "$BR_PATH" --output json >/dev/null 2>&1 || break
+            [ "$i" = 15 ] && { echo "::error::stale ${RB} did not delete in time"; exit 1; }
+            sleep 2
+          done
+          databricks postgres create-branch "projects/${{ secrets.LAKEBASE_PROJECT }}" "$RB" \
+            --json '{"spec":{"source_branch":"projects/${{ secrets.LAKEBASE_PROJECT }}/branches/production","ttl":"86400s"}}'
+          echo "recovery_branch=${RB}" >> "$GITHUB_OUTPUT"
+        id: recovery
+
+      # Pro track: the OFFICIAL Atlas apply action against the minted
+      # credential — Atlas owns the deployment, not our wrapper.
+      - name: Apply migrations via the official Atlas action (Pro track)
+        if: vars.ATLAS_EDITION == 'pro'
+        uses: ariga/atlas-action/migrate/apply@v1
+        with:
+          dir: 'file://db/migrations'
+          url: '${{ steps.cred.outputs.url }}'
+
+      - name: Replay objects + run smoke tests (Pro track)
+        if: vars.ATLAS_EDITION == 'pro'
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: pro
+          LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
-          TARGET_BRANCH: production
+          TARGET_BRANCH: ${{ env.TARGET_BRANCH }}
+          ATLAS_BIN: /tmp/atlas
+          SKIP_MIGRATIONS: "1"
+        run: ./scripts/deploy_db.sh
+
+      # CE track (fallback): our script — same ledger, --tx-mode all,
+      # objects replay, tests, one entrypoint.
+      - name: Apply migrations + objects (CE track)
+        if: vars.ATLAS_EDITION != 'pro'
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ce
+          LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
+          DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
+          TARGET_BRANCH: ${{ env.TARGET_BRANCH }}
           ATLAS_BIN: /tmp/atlas
         run: ./scripts/deploy_db.sh

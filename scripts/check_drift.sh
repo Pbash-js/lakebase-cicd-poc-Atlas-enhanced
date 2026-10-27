@@ -32,6 +32,7 @@ HOST="$(databricks postgres get-endpoint "$PROD_EP" --output json \
   | python -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")"
 TOKEN="$(databricks postgres generate-database-credential "$PROD_EP" --output json \
   | python -c "import sys,json;print(json.load(sys.stdin)['token'])")"
+echo "::add-mask::${TOKEN}"   # never leak the runtime credential in logs
 ENCODED_USER="$(python -c "import urllib.parse;print(urllib.parse.quote('${DATABRICKS_PG_USER}', safe=''))")"
 PROD_URL="postgres://${ENCODED_USER}:${TOKEN}@${HOST}:5432/databricks_postgres?sslmode=require"
 
@@ -58,6 +59,47 @@ with psycopg.connect(sys.argv[1], autocommit=True) as c:
 PYEOF
 DEV_URL="postgres://${ENCODED_USER}:${TOKEN}@${HOST}:5432/${SCRATCH}?sslmode=require"
 
+# --- Pro mode: one object-aware diff replaces 5a+5b ---------------------------
+# Pro models functions/views/triggers/etc., so a single schema diff against a
+# desired state that concatenates schema.sql + db/objects (layer order) covers
+# structural AND object drift AND ghosts (live objects not in desired state are
+# reported as DROPs). No probe branch, no replay, no def comparison.
+if [ "${ATLAS_EDITION:-ce}" = "pro" ]; then
+  echo "▶ Pro drift check: object-aware schema diff (prod vs schema.sql + db/objects)"
+  python - "$REPO" <<'PYEOF'
+import glob, sys
+repo = sys.argv[1]
+order = ["01_types", "02_functions", "03_procedures", "04_views", "05_triggers"]
+parts = [open(f"{repo}/db/schema/schema.sql", encoding="utf-8").read()]
+for layer in order:
+    for f in sorted(glob.glob(f"{repo}/db/objects/{layer}/*.sql")):
+        parts.append(open(f, encoding="utf-8").read())
+import os
+os.makedirs(f"{repo}/.tmp_pro", exist_ok=True)
+open(f"{repo}/.tmp_pro/desired.sql", "w", encoding="utf-8").write("\n\n".join(parts))
+PYEOF
+  PRO_OUT="$("$ATLAS_BIN" schema diff \
+    --from "$PROD_URL" \
+    --to "file://${REPO}/.tmp_pro/desired.sql" \
+    --dev-url "$DEV_URL" \
+    --schema public \
+    --exclude "public.schema_migrations" \
+    --exclude "public.grant_*" 2>&1)" || {
+    echo "✗ atlas schema diff (Pro) failed:"; printf '%s\n' "$PRO_OUT"; exit 2;
+  }
+  # ponytail: platform-owned event triggers (on_create_*) cannot be --exclude'd
+  # (DB-level resources); filter the known block. Revisit if Lakebase adds more.
+  # (|| true: an all-noise diff leaves grep with zero output = exit 1.)
+  PRO_OUT="$(printf '%s\n' "$PRO_OUT" | grep -vE 'on_create_|DROP EVENT TRIGGER' || true)"
+  if [ -z "$(printf '%s' "$PRO_OUT" | tr -d '[:space:]')" ]; then
+    echo "✓ no drift (Pro object-aware diff)"
+    exit 0
+  fi
+  echo "✗ drift detected (statements to move prod to desired state):"
+  printf '%s\n' "$PRO_OUT" | sed 's/^/    /'
+  exit 1
+fi
+
 echo "▶ 5a structural drift: prod vs db/schema/schema.sql"
 # -s public + excludes: tooling metadata (Lakebase __db_system, the Atlas
 # ledger schema, the legacy pre-Atlas schema_migrations table) is not app
@@ -71,7 +113,14 @@ STRUCT_OUT="$("$ATLAS_BIN" schema diff \
   echo "✗ atlas schema diff failed:"; printf '%s\n' "$STRUCT_OUT"; exit 2;
 }
 STRUCT_DRIFT=0
-if printf '%s\n' "$STRUCT_OUT" | grep -qi 'schemas are synced'; then
+# CE 5a false positives: code objects (functions, procedures, views, triggers,
+# trigger functions) deployed by migrations are not declared in schema.sql, so
+# the structural diff emits DROPs for them forever. They are policed properly
+# by 5b (definition compare + ghosts), so 5a filters every code-object DROP
+# and keeps only table/index/schema-level statements.
+STRUCT_OUT="$(printf '%s\n' "$STRUCT_OUT" \
+  | grep -viE 'drop .* (function|procedure|view|trigger|event trigger)|DROP (FUNCTION|PROCEDURE|VIEW|TRIGGER|EVENT TRIGGER)' || true)"
+if [ -z "$(printf '%s' "$STRUCT_OUT" | tr -d '[:space:]')" ]; then
   echo "  clean: no structural drift"
 else
   STRUCT_DRIFT=1
@@ -100,6 +149,7 @@ PROBE_HOST="$(databricks postgres get-endpoint "$PROBE_EP" --output json \
   | python -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")"
 PROBE_TOKEN="$(databricks postgres generate-database-credential "$PROBE_EP" --output json \
   | python -c "import sys,json;print(json.load(sys.stdin)['token'])")"
+echo "::add-mask::${PROBE_TOKEN}"
 
 python scripts/apply_objects.py \
   --host "$PROBE_HOST" --port 5432 --dbname databricks_postgres \
@@ -118,6 +168,11 @@ DEFS_SQL = """
 SELECT 'function', pg_get_functiondef(p.oid), p.proname::text
   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
  WHERE n.nspname = 'public' AND p.prokind = 'f'
+   AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')
+UNION ALL
+SELECT 'procedure', pg_get_functiondef(p.oid), p.proname::text
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = 'public' AND p.prokind = 'p'
    AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')
 UNION ALL
 SELECT 'view', pg_get_viewdef(c.oid, true), c.relname::text
@@ -148,7 +203,7 @@ repo = Path(sys.argv[3])
 declared = set()
 for f in repo.glob("db/objects/**/*.sql"):
     for m in re.finditer(
-        r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|VIEW|TRIGGER)\s+(?:public\.)?([A-Za-z_][\w]*)",
+        r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|VIEW|TRIGGER)\s+(?:public\.)?([A-Za-z_][\w]*)",
         f.read_text(encoding="utf-8"),
     ):
         declared.add(m.group(1).lower())
