@@ -1,9 +1,9 @@
-# Lakebase CI/CD — dual-engine migrator (Atlas Pro primary, CE fallback)
+# Lakebase CI/CD: dual-engine migrator (Atlas Pro primary, CE fallback)
 
 Migration pipeline for Lakebase Postgres with two switchable engines:
 
 - **Atlas Pro track (default target architecture)**: the official Atlas
-  GitHub Actions do the work — `setup-atlas`, `migrate/lint` on every PR,
+  GitHub Actions do the work: `setup-atlas`, `migrate/lint` on every PR,
   `migrate/push` to the Schema Registry on merge, and `migrate/apply` to the
   database. Atlas owns planning, linting, versioning and deployment; this
   repo provides the desired state, the Lakebase topology and the credential
@@ -97,8 +97,8 @@ path (PR to `main`, then CD).
 | `scripts/gen_migration.sh` | The one command for schema changes: creates a dev branch, builds a throwaway scratch DB from `template0`, runs `atlas migrate diff`, writes the migration. `--check` mode fails when committed migrations do not converge to desired state. |
 | `scripts/apply_migrations_atlas.sh` | Applies pending migrations via `atlas migrate apply --tx-mode all`: the entire pending batch is ONE transaction, so a failure halfway through leaves nothing applied. Ledger: `atlas_schema_revisions` (Atlas-managed: exactly-once, per-revision checksums, advisory lock). Baseline adoption is an explicit operator step: `ATLAS_BASELINE=<version>`, never auto-detected. |
 | `scripts/apply_objects.py` | Replays `db/objects/` in layer order, and applies `retirements.txt` first. The WHOLE run is one transaction: objects applied before a failure roll back with it. |
-| `scripts/check_drift.sh` | Drift probe: structural diff (live branch vs `schema.sql`) + object comparison (live branch vs a repo replay on a probe branch). Exits 1 on drift, 2 on probe error. Pro mode (`ATLAS_EDITION=pro`): one object-aware `atlas schema diff` against `schema.sql + db/objects` — no probe branch needed |
-| `scripts/rollback_migration.sh` | Pro-only `atlas migrate down` wrapper: reverts the last N migrations with the migrations' pre-revert data checks enforced. Refuses production (restore the recovery branch instead). CE: not available — recovery branch or forward migration |
+| `scripts/check_drift.sh` | Drift probe: structural diff (live branch vs `schema.sql`) + object comparison (live branch vs a repo replay on a probe branch). Exits 1 on drift, 2 on probe error. Pro mode (`ATLAS_EDITION=pro`): one object-aware `atlas schema diff` against `schema.sql + db/objects`, no probe branch needed |
+| `scripts/rollback_migration.sh` | Pro-only `atlas migrate down` wrapper: reverts the last N migrations with the migrations' pre-revert data checks enforced. Refuses production (restore the recovery branch instead). CE: not available, recovery branch or forward migration |
 | `scripts/deploy_db.sh` | Deploy entrypoint: mints a 1-hour OAuth credential, then Atlas validate -> apply -> objects -> tests. Production is reachable only inside GitHub Actions CD. |
 | `scripts/new_sandbox.sh` | One-command personal dev branch (7-day TTL). |
 | `.github/workflows/pr-validation.yml` | Per-PR checks (see the gates table below). Recreates the `pr-<n>` branch fresh off current production on every run. |
@@ -127,12 +127,12 @@ when running on the community edition.
 
 Deliberately bespoke under BOTH tracks: none for the Pro track's core path.
 The only Lakebase-specific glue is credential minting (1-hour OAuth
-credential via `generate-database-credential`, below) and the DAB bundle —
+credential via `generate-database-credential`, below) and the DAB bundle,
 that is the platform's own deployment surface, not an Atlas concern.
 
 ## Database platform facts (verified live)
 
-- Lakebase Postgres runs **PostgreSQL 17.11** (not 18) — the CI dev-database
+- Lakebase Postgres runs **PostgreSQL 17.11** (not 18), so the CI dev-database
   service container and `docker://postgres/17/dev` dev-urls match it.
 - Credentials: no static DB URL exists or should. The pattern is the
   documented Lakebase service-principal flow: long-lived SP OAuth secret
@@ -254,13 +254,13 @@ LAKEBASE_PROJECT=<id> DATABRICKS_PG_USER=<role> \
 SOURCE_BRANCH=<branch> PROBE_BRANCH=drift-probe ./scripts/check_drift.sh
 ```
 
-## CE vs Pro: decision made, CE is the fallback
+## Atlas Pro is the deliverable; CE is the fallback
 
-The decision this document previously left open is now implemented: the
-**Pro track is the target architecture** (official actions own lint,
-versioning and apply); CE remains the verified fallback that runs whenever
-`ATLAS_EDITION=ce` (today's default until the Pro license lands — trial
-expires 2026-11-03). Every CE closure below stays live and untouched.
+The **Pro track is the target architecture**: the official Atlas actions
+own lint, versioning and apply. CE remains the verified fallback that runs
+whenever `ATLAS_EDITION=ce` (the runtime default until the Pro license
+lands; trial expires 2026-11-03). Every CE closure below stays live and
+untouched.
 
 | CE gap | Closed in this repo? | How / residual limit |
 | --- | --- | --- |
@@ -350,10 +350,10 @@ pre-step (`Mint Lakebase database credential`) and hands the URL to the
 action. Today the workspace token mints for its own identity; once the SP
 OAuth secrets are generated (one console click per SP, steps in
 [docs/IDENTITIES.md](docs/IDENTITIES.md)) the same steps run as SP-CI /
-SP-CD / SP-MONITOR and the static `DATABRICKS_TOKEN` is retired. This
-replaces the previously-planned OIDC federation switchover (which needs
-account-level API, unavailable on Free Edition): OAuth M2M secrets work at
-workspace level on Free Edition.
+SP-CD / SP-MONITOR and no static `DATABRICKS_TOKEN` is used. The OIDC
+federation switchover requires account-level API, unavailable on Free
+Edition; OAuth M2M secrets work at workspace level on Free Edition, so M2M
+is the implemented pattern.
 
 Platform facts (verified live): Lakebase Postgres runs **PostgreSQL 17.11**
 (dev containers pinned to `postgres:17` to match). `cd-promotion` accepts a

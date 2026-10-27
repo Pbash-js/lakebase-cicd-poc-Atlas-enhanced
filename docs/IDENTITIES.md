@@ -8,7 +8,7 @@ so the switchover changes secrets, not code.
 
 ## The credential pattern (documented, established)
 
-Source: Databricks docs —
+Source: Databricks docs.
 [external apps connect via API](https://docs.databricks.com/aws/en/oltp/projects/external-apps-manual-api)
 and
 [OAuth M2M](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-m2m).
@@ -22,10 +22,9 @@ SP OAuth secret (long-lived, up to 730 days, Workspace access enabled)
 
 The Postgres password is NEVER long-lived: the SP self-mints a fresh
 credential per run. This is the pattern the CD workflow implements
-("Mint Lakebase database credential" step). It also replaces the
-previously-planned OIDC federation switchover: federation policies need
-account-level API (unavailable on Free Edition), OAuth M2M secrets work at
-workspace level on Free Edition.
+("Mint Lakebase database credential" step). The OIDC federation switchover
+requires account-level API (unavailable on Free Edition); OAuth M2M secrets
+work at workspace level on Free Edition, so M2M is the implemented pattern.
 
 ### The one-time console step (per SP, needs admin UI)
 
@@ -55,7 +54,7 @@ The client IDs are stored as GitHub Actions REPOSITORY VARIABLES (not
 secrets, they are not credentials): `SP_CI_CLIENT_ID`, `SP_CD_CLIENT_ID`,
 `SP_MONITOR_CLIENT_ID`.
 
-## Federation policies (GitHub OIDC) — THE BLOCKED STEP
+## Federation policies (GitHub OIDC): THE BLOCKED STEP
 
 Each SP needs a service-principal federation policy (account-level, created
 once by an account admin). This requires account-level API access, which
