@@ -36,6 +36,18 @@ jobs:
           curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-v1.3.5
           chmod +x /tmp/atlas
 
+      # Pro mode: push the migration directory to the Atlas Cloud Schema
+      # Registry (official CI guide step 2) so every merge is versioned in
+      # the cloud. Skipped under CE. Apply stays our script below: Lakebase
+      # needs a per-run minted credential and the prod guard, not a static DB_URL.
+      - name: Push migration dir to Atlas Cloud registry (Pro only)
+        if: vars.ATLAS_EDITION == 'pro'
+        uses: ariga/atlas-action/migrate/push@v1
+        with:
+          dir: 'file://db/migrations'
+          dev-url: 'docker://postgres/15/dev?search_path=public'
+          dir-name: 'lakebase-cicd-poc'
+
       - name: Pre-deploy recovery branch (PITR fork of production)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}

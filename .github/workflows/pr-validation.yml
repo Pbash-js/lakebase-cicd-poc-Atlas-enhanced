@@ -9,6 +9,23 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    services:
+      # Official Atlas CI pattern (atlasgo.io/guides/ci-platforms/github-versioned):
+      # a throwaway postgres container serves as the dev-database for lint
+      # analysis. Only used by the Pro lint step; idle under CE.
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: dev
+          POSTGRES_PASSWORD: pass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-start-period 10s
+          --health-timeout 5s
+          --health-retries 5
     permissions:
       pull-requests: write # comments the generated SQL on the PR; no contents:write — CI never commits
     steps:
@@ -16,6 +33,24 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}   # commit on the PR branch, not the merge ref
           fetch-depth: 0
+
+      # Pro mode: official Atlas Cloud integration — installs Atlas with the
+      # bot token (grant cached for offline access) and posts a native lint
+      # report on the PR. Skipped entirely under CE.
+      - name: Atlas Cloud setup + native lint (Pro only)
+        if: vars.ATLAS_EDITION == 'pro'
+        uses: ariga/setup-atlas@v0
+        with:
+          cloud-token: ${{ secrets.ATLAS_CLOUD_TOKEN }}
+      - name: Atlas Cloud lint report (Pro only)
+        if: vars.ATLAS_EDITION == 'pro'
+        uses: ariga/atlas-action/migrate/lint@v1
+        with:
+          dir: 'file://db/migrations'
+          dev-url: 'postgres://postgres:pass@localhost:5432/dev?search_path=public&sslmode=disable'
+          dir-name: 'lakebase-cicd-poc'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Infra-file integrity gate
         env:

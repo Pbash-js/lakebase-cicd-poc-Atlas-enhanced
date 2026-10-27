@@ -2,3 +2,6 @@ atlas.exe
 scratch_url.txt
 __pycache__/
 .tmp_pro/
+.env
+.env.py
+*.env

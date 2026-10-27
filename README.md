@@ -298,6 +298,19 @@ portal.ariga.io). The CLI login session token is NOT accepted as
 `ATLAS_TOKEN` (verified live). Until that token is added, keep
 `ATLAS_EDITION=ce`; locally, an `atlas login` session unlocks everything.
 
+### Alignment with the official Atlas GitHub Actions guide
+
+Source: [atlasgo.io/guides/ci-platforms/github-versioned](https://atlasgo.io/guides/ci-platforms/github-versioned).
+
+| Guide step | This repo | Why |
+| --- | --- | --- |
+| Bot token as `ATLAS_CLOUD_TOKEN` secret | done (repo secret; token value lives only in the ignored `.env.py`) | official naming kept |
+| `ariga/setup-atlas@v0` with `cloud-token` | `pr-validation.yml`, Pro-gated; grant cached for offline access | official install + auth path in CI |
+| `ariga/atlas-action/migrate/lint@v1` | `pr-validation.yml`, Pro-gated, `dir-name: lakebase-cicd-poc`, dev-database = postgres:15 service container | native lint report posted on the PR by Atlas Cloud |
+| `migrate/push` to the Schema Registry on merge | `cd-promotion.yml`, Pro-gated; registry repo: [pragmatix.atlasgo.cloud/dirs/4294967296](https://pragmatix.atlasgo.cloud/dirs/4294967296) | official step 2 (cloud versioning of the dir) |
+| `ariga/atlas-action/migrate/apply@v1` with static `DB_URL` | intentionally NOT used: `apply_migrations_atlas.sh` | Lakebase credentials are minted per run (1-hour OAuth) and production is guarded; no static DB URL exists. Apply keeps `--tx-mode all` + the advisory-lock ledger |
+| Local `docker://postgres` dev-database | Lakebase template0 scratch DB inside the branch | no Docker dependency; dev DB is the same engine/version as production |
+
 ## Sources
 
 - [Atlas Community Edition feature matrix](https://atlasgo.io/community-edition)
