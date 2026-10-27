@@ -9,7 +9,6 @@ concurrency:
 permissions:
   contents: read
   issues: write
-  id-token: write           # OIDC: exchange the GitHub JWT for a Databricks token (SP-MONITOR)
 
 jobs:
   monitor:
@@ -34,10 +33,9 @@ jobs:
         id: probe
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_AUTH_TYPE: github-oidc
-          DATABRICKS_CLIENT_ID: ${{ vars.SP_MONITOR_CLIENT_ID }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
-          DATABRICKS_PG_USER: ${{ vars.SP_MONITOR_CLIENT_ID }}
+          DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           ATLAS_BIN: /tmp/atlas
         run: |
           if ./scripts/check_drift.sh > drift_report.txt 2>&1; then

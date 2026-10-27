@@ -251,7 +251,7 @@ run through both paths on a Lakebase branch.
 
 ## GitHub configuration (Settings)
 
-Repository variables (Actions -> Variables, not secrets; client IDs are not credentials):
+Repository variables (Actions -> Variables; SP client IDs, kept for the OIDC switchover):
 
 | Variable | Value |
 | --- | --- |
@@ -264,14 +264,14 @@ Repository secrets:
 | Secret | Example |
 | --- | --- |
 | DATABRICKS_HOST | https://dbc-xxxxxxxx.cloud.databricks.com |
+| DATABRICKS_TOKEN | PAT or SP token with Lakebase access |
 | LAKEBASE_PROJECT | core-app-db |
+| DATABRICKS_PG_USER | the Lakebase Postgres role that runs the pipeline |
 
-Auth is OIDC workload federation: each workflow exchanges the GitHub JWT
-for a ~1h Databricks token via a federation policy on its SP
-(`DATABRICKS_AUTH_TYPE=github-oidc`, `permissions: id-token: write`). No
-static tokens. Full identity map, required federation subjects, the
-`app_pipeline` ownership model, and per-workspace setup:
-[docs/IDENTITIES.md](docs/IDENTITIES.md).
+Auth today is the static `DATABRICKS_TOKEN`. The OIDC switchover (3 SPs,
+federation policies, per-workspace subject strings) is fully specced and
+stubbed in [docs/IDENTITIES.md](docs/IDENTITIES.md); it is blocked because
+federation policies are account-level API, out of Free Edition reach.
 
 ## Sources
 
@@ -289,15 +289,15 @@ static tokens. Full identity map, required federation subjects, the
 Closed since this section was written: production test split (smoke vs
 integration), CI fail-on-drift (no auto-commit), explicit baseline,
 three-dot merge-base diffs, pre-deploy recovery branch in CD, pinned Atlas
-version, credential masking, OIDC with three service principals
-(docs/IDENTITIES.md), bundle targets for Dev/QA/Stage/Prod (dev/qa/stage
-are placeholder stubs until the workspaces exist; prod is live).
-Decisions taken: GC stays weekly-only (no PR-close deletion for now),
-dev-branch TTL stays 7 days, ownership review skipped for the POC.
+version, credential masking, bundle targets for Dev/QA/Stage/Prod
+(dev/qa/stage are placeholder stubs until the workspaces exist; prod is
+live), SP designations + Lakebase roles + app_pipeline ownership grants
+(docs/IDENTITIES.md).
 
 | # | Change | Open item |
 | --- | --- | --- |
 | 1 | Ownership | Assign CODEOWNERS to a team instead of individuals; mark the `production` Lakebase branch protected (skipped for this POC by decision) |
+| 2 | OIDC credentials | Switch the static `DATABRICKS_TOKEN` to workload federation with the three designated SPs (SP-CI, SP-CD, SP-MONITOR). SPs, Lakebase roles and Postgres grants are DONE (docs/IDENTITIES.md); blocked on federation policies, which need account-level API access beyond Free Edition. The runner error already gave us the exact subject strings |
 
 Carried from v1, still open: RBAC as code, AI-impact review (AI Gateway),
 multi-environment promotion with the platform team.

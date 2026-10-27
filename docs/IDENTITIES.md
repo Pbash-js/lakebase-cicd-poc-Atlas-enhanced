@@ -1,9 +1,15 @@
 # Deploy identities: service principals, roles, federation (setup + usage)
 
-Three Databricks service principals run this pipeline. No static tokens:
-every workflow exchanges a short-lived GitHub OIDC JWT for a Databricks
-token (~1 h) via a federation policy on the SP. Humans use
-`databricks auth login` (their own identity); the SPs exist only for CI/CD.
+STATUS: STUB / FORWARD PLAN. The workflows below still authenticate with
+the static `DATABRICKS_TOKEN` secret. The SP setup is complete (principals,
+Lakebase roles, Postgres grants) but the OIDC switchover is BLOCKED: the
+service-principal federation policy API is account-level, which the Free
+Edition workspace token cannot reach. Keep this document as the runbook for
+when account access (or a paid tier) is available.
+
+Three Databricks service principals are designated to run this pipeline.
+Humans use `databricks auth login` (their own identity); the SPs exist only
+for CI/CD.
 
 ## The three identities
 
@@ -17,13 +23,14 @@ The client IDs are stored as GitHub Actions REPOSITORY VARIABLES (not
 secrets, they are not credentials): `SP_CI_CLIENT_ID`, `SP_CD_CLIENT_ID`,
 `SP_MONITOR_CLIENT_ID`.
 
-## Federation policies (GitHub OIDC)
+## Federation policies (GitHub OIDC) — THE BLOCKED STEP
 
 Each SP needs a service-principal federation policy (account-level, created
-once by an account admin). The policy SUBJECT must exactly match the JWT
-`sub` claim GitHub issues for the workflow. IMPORTANT: on this GitHub
-account the `sub` carries enterprise decorations (login@org-id,
-repo@repo-id). The required subjects, verbatim:
+once by an account admin). This requires account-level API access, which
+the Free Edition workspace token does not have. The exact subjects are
+known from a live runner attempt (the Databricks error echoes the token's
+`sub` verbatim): on this GitHub account the `sub` carries enterprise
+decorations (login@org-id, repo@repo-id).
 
 | SP | Subject |
 | --- | --- |

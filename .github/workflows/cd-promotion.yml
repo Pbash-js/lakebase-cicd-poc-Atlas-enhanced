@@ -12,7 +12,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: production   # put required reviewers here
     permissions:
-      id-token: write         # OIDC: exchange the GitHub JWT for a Databricks token (SP-CD)
     steps:
       - uses: actions/checkout@v4
 
@@ -27,8 +26,7 @@ jobs:
       - name: Deploy Infrastructure Assets via DABs
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_AUTH_TYPE: github-oidc
-          DATABRICKS_CLIENT_ID: ${{ vars.SP_CD_CLIENT_ID }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: databricks bundle deploy -t prod
 
       - name: Install Atlas CE (pinned)
@@ -39,8 +37,7 @@ jobs:
       - name: Pre-deploy recovery branch (PITR fork of production)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_AUTH_TYPE: github-oidc
-          DATABRICKS_CLIENT_ID: ${{ vars.SP_CD_CLIENT_ID }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
         run: |
           RB="recovery-${{ github.run_id }}"
@@ -60,10 +57,9 @@ jobs:
       - name: Apply Migrations + Objects to Production (Atlas-native ledger, exactly-once)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_AUTH_TYPE: github-oidc
-          DATABRICKS_CLIENT_ID: ${{ vars.SP_CD_CLIENT_ID }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
-          DATABRICKS_PG_USER: ${{ vars.SP_CD_CLIENT_ID }}
+          DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           TARGET_BRANCH: production
           ATLAS_BIN: /tmp/atlas
         run: ./scripts/deploy_db.sh
