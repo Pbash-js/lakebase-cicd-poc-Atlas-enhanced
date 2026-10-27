@@ -57,7 +57,7 @@ jobs:
           BASE: ${{ github.base_ref }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         run: |
-          git fetch -q "origin/${BASE}"
+          git fetch -q origin "${BASE}"
           CHANGED=$(git --no-pager diff --no-renames --name-only "origin/${BASE}...HEAD" -- .github databricks.yml scripts)
           if [ -z "$CHANGED" ]; then
             echo "No infra/runner changes — gate passed"
@@ -74,7 +74,7 @@ jobs:
         env:
           BASE: ${{ github.base_ref }}
         run: |
-          git fetch -q "origin/${BASE}"
+          git fetch -q origin "${BASE}"
           EXIT=0
           for f in $(git --no-pager diff --no-renames --name-only "origin/${BASE}...HEAD" -- db/migrations); do
             [ "$f" = "db/migrations/atlas.sum" ] && continue   # checksum file is rewritten by every generation; Atlas verifies it at apply time
@@ -90,7 +90,7 @@ jobs:
           BASE: ${{ github.base_ref }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         run: |
-          git fetch -q "origin/${BASE}"
+          git fetch -q origin "${BASE}"
           EXIT=0
           for f in $(git --no-pager diff --no-renames --name-only "origin/${BASE}...HEAD" -- db/migrations); do
             [ "$f" = "db/migrations/atlas.sum" ] && continue
