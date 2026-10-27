@@ -12,11 +12,21 @@
 # Errors (auth, connectivity, replay failure) exit 2 so the caller can tell
 # "drift detected" from "probe itself failed".
 set -euo pipefail
+# Any unexpected command failure (auth expiry, connectivity, bad URL) must
+# exit 2 ("probe error"), never 1 ("drift"): the monitor workflow branches on
+# the exit code and a wrong code files a false drift issue every day.
+trap 'echo "✗ probe error (see report above)" >&2; exit 2' ERR
 
 : "${LAKEBASE_PROJECT:?set LAKEBASE_PROJECT (the Lakebase project id)}"
 : "${DATABRICKS_PG_USER:?set DATABRICKS_PG_USER (the Lakebase Postgres role)}"
 SOURCE_BRANCH="${SOURCE_BRANCH:-production}"   # the branch treated as "live"
 PROBE_BRANCH="${PROBE_BRANCH:-drift-probe}"
+# Guard: this script deletes PROBE_BRANCH (before create and on exit). Never
+# let it point at anything that is not an ephemeral drift branch.
+case "$PROBE_BRANCH" in
+  drift-*) [ "$PROBE_BRANCH" != "$SOURCE_BRANCH" ] || { echo "✗ PROBE_BRANCH must differ from SOURCE_BRANCH" >&2; exit 2; } ;;
+  *) echo "✗ refusing to run: PROBE_BRANCH='$PROBE_BRANCH' must match drift-* (this script deletes it)" >&2; exit 2 ;;
+esac
 ATLAS_BIN="${ATLAS_BIN:-atlas}"
 command -v "$ATLAS_BIN" >/dev/null 2>&1 || { echo "✗ atlas CLI not found (set ATLAS_BIN)"; exit 2; }
 command -v python >/dev/null 2>&1 || { echo "✗ python not found"; exit 2; }
@@ -66,15 +76,16 @@ DEV_URL="postgres://${ENCODED_USER}:${TOKEN}@${HOST}:5432/${SCRATCH}?sslmode=req
 # reported as DROPs). No probe branch, no replay, no def comparison.
 if [ "${ATLAS_EDITION:-ce}" = "pro" ]; then
   echo "▶ Pro drift check: object-aware schema diff (prod vs schema.sql + db/objects)"
+  # Layer order comes from apply_objects.py (single source of truth).
   python - "$REPO" <<'PYEOF'
-import glob, sys
+import glob, sys, os
+sys.path.insert(0, os.path.join(sys.argv[1], "scripts"))
+from apply_objects import LAYER_ORDER
 repo = sys.argv[1]
-order = ["01_types", "02_functions", "03_procedures", "04_views", "05_triggers"]
 parts = [open(f"{repo}/db/schema/schema.sql", encoding="utf-8").read()]
-for layer in order:
+for layer in LAYER_ORDER:
     for f in sorted(glob.glob(f"{repo}/db/objects/{layer}/*.sql")):
         parts.append(open(f, encoding="utf-8").read())
-import os
 os.makedirs(f"{repo}/.tmp_pro", exist_ok=True)
 open(f"{repo}/.tmp_pro/desired.sql", "w", encoding="utf-8").write("\n\n".join(parts))
 PYEOF

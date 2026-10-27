@@ -40,6 +40,25 @@ work at workspace level on Free Edition, so M2M is the implemented pattern.
    `DATABRICKS_AUTH_TYPE=client-credentials` (or the SDK equivalent) and the
    minted database credential belongs to that SP's Postgres role.
 
+### Secret scoping (same console pass)
+
+While generating the secrets, also scope the GitHub secrets so PR jobs can
+never hold a production-capable credential:
+
+1. Move `DATABRICKS_TOKEN` from repository secrets to ENVIRONMENT secrets on
+   `production` (Settings → Environments → production → secrets). Only the
+   CD job (which declares `environment: production`) can read it.
+2. Create a repository secret `DATABRICKS_TOKEN_CI` for PR/monitor jobs
+   (today: same value; after the switchover: an SP-CI / SP-MONITOR token).
+3. Swap the workflow references: `secrets.DATABRICKS_TOKEN` →
+   `secrets.DATABRICKS_TOKEN_CI` in pr-validation.yml and
+   schema-drift-monitor.yml.
+
+Residual until the Lakebase project roles are split: all three SPs are
+members of `app_pipeline` (which owns the schema), so a leaked CI or monitor
+credential could write to production. The real control is Lakebase project
+RBAC per identity, which needs the SP secrets first.
+
 Identity map (client id → role):
 
 ## The three identities
@@ -85,7 +104,7 @@ databricks account service-principal-federation-policy create <SP-account-id> --
 }'
 ```
 
-Workflow side (already wired): `permissions: id-token: write` plus
+Workflow side (the OIDC option, NOT currently wired): `permissions: id-token: write` plus
 `DATABRICKS_AUTH_TYPE: github-oidc` and `DATABRICKS_CLIENT_ID: <sp-uuid>`
 in every job env.
 
@@ -126,7 +145,7 @@ Why: `atlas migrate apply` and `apply_objects.py` must ALTER and CREATE
 objects, and PostgreSQL requires ownership for ALTER. With `app_pipeline`
 as owner and all three SPs as members (INHERIT default), every pipeline
 identity has exactly the DDL rights it needs, and the human owner
-(`ashdeveloper1151@gmail.com`) is also a member for administration.
+(the project owner's identity) is also a member for administration.
 
 Note for fresh workspaces: run the ownership block ONCE on that workspace's
 production branch (as the creating user) BEFORE the first SP-driven deploy.

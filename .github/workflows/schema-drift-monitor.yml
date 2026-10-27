@@ -23,16 +23,17 @@ jobs:
           cloud-token: ${{ secrets.ATLAS_CLOUD_TOKEN }}
 
       - name: Install Databricks CLI (pinned)
-        uses: databricks/setup-cli@main
+        uses: databricks/setup-cli@v1.22.1
         with:
           version: 1.17.0
 
       - name: Install Python deps
-        run: pip3 install "psycopg[binary]"
+        run: pip3 install "psycopg[binary]==3.2.9"
 
       - name: Install Atlas CE (pinned)
         run: |
           curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-v1.3.5
+          echo "bfc65a52d3b745178c619a314052580861a385c364ae5abece174286055d525a  /tmp/atlas" | sha256sum -c -   # supply-chain: pinned v1.3.5 checksum
           chmod +x /tmp/atlas
 
       - name: Run drift probe (production vs Git)
@@ -46,16 +47,19 @@ jobs:
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
         run: |
-          if ./scripts/check_drift.sh > drift_report.txt 2>&1; then
-            echo "drift=false" >> "$GITHUB_OUTPUT"
+          set +e
+          ./scripts/check_drift.sh > drift_report.txt 2>&1
+          RC=$?
+          set -e
+          # 0 = clean, 1 = drift, 2 = probe error (never drift)
+          if [ "$RC" = "1" ]; then
+            echo "drift=true"  >> "$GITHUB_OUTPUT"; echo "kind=drift" >> "$GITHUB_OUTPUT"
+          elif [ "$RC" = "2" ]; then
+            echo "drift=true"  >> "$GITHUB_OUTPUT"; echo "kind=error" >> "$GITHUB_OUTPUT"
+          elif [ "$RC" = "0" ]; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"; echo "kind=clean" >> "$GITHUB_OUTPUT"
           else
-            echo "drift=true" >> "$GITHUB_OUTPUT"
-          fi
-          # a probe ERROR (exit 2) is not drift: surface it as a distinct title
-          if grep -qE 'schema diff failed|object replay|did not delete|not ready|atlas CLI not found|python not found' drift_report.txt; then
-            echo "kind=error" >> "$GITHUB_OUTPUT"
-          else
-            echo "kind=drift" >> "$GITHUB_OUTPUT"
+            echo "unexpected exit code $RC"; exit 1
           fi
           cat drift_report.txt
 
@@ -93,7 +97,7 @@ jobs:
           TITLE="Schema drift probe FAILED (auth/connectivity/replay error, not drift)"
           gh issue create --title "$TITLE" \
             --body "The probe errored instead of measuring. Check workflow logs." \
-            --label schema-drift || true
+            --label probe-error || true
 
       - name: Fail the run on drift
         if: steps.probe.outputs.drift == 'true'

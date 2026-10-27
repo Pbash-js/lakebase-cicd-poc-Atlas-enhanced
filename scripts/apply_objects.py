@@ -23,15 +23,32 @@ RETIREMENTS = "retirements.txt"
 
 
 def load_retirements(root: Path):
-    """One SQL statement per line; blank lines and -- comments ignored."""
+    """One SQL statement per line; blank lines and -- comments ignored.
+
+    STRICT whitelist: only `DROP <VIEW|FUNCTION|PROCEDURE|TRIGGER|TYPE> ...
+    IF EXISTS ...` statements are accepted. Anything else is a hard error:
+    this file runs before the destructive-change gate (which only reads
+    db/migrations), and a non-idempotent line would block every future
+    deploy after the first successful one.
+    """
+    import re
+    ok = re.compile(
+        r"^DROP (VIEW|FUNCTION|PROCEDURE|TRIGGER|TYPE) IF EXISTS [A-Za-z_][\w .,\"'()]*$",
+        re.IGNORECASE,
+    )
     f = root / RETIREMENTS
     if not f.is_file():
         return []
     stmts = []
-    for raw in f.read_text(encoding="utf-8").splitlines():
+    for i, raw in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("--"):
             continue
+        if not ok.match(line.rstrip(";")):
+            raise SystemExit(
+                f"✗ {RETIREMENTS}:{i}: only 'DROP <VIEW|FUNCTION|PROCEDURE|TRIGGER|TYPE> IF EXISTS <name>' "
+                f"statements are allowed (no CASCADE, always idempotent). Got: {line}"
+            )
         stmts.append(line.rstrip(";"))
     return stmts
 
@@ -48,6 +65,12 @@ def main() -> int:
     args = ap.parse_args()
 
     root = Path(args.objects_root)
+    # Fail on unknown folders: a new layer under db/objects must be added to
+    # LAYER_ORDER explicitly, never silently skipped.
+    import sys as _sys
+    for d in sorted(root.iterdir()):
+        if d.is_dir() and d.name not in LAYER_ORDER:
+            _sys.exit(f"✗ unknown object layer folder '{d.name}' — add it to LAYER_ORDER in scripts/apply_objects.py (single source of truth)")
     files = []
     for layer in LAYER_ORDER:
         d = root / layer
@@ -61,6 +84,9 @@ def main() -> int:
             host=args.host, port=args.port, dbname=args.dbname,
             user=args.user, password=args.password, sslmode=args.sslmode,
         ) as conn, conn.transaction():
+            # DDL takes table locks: fail fast instead of queueing behind a
+            # long query and freezing everything behind us.
+            conn.execute("SET LOCAL lock_timeout = '5s'")
             if retirements:
                 print(f"  retirements ({len(retirements)} statement(s)):")
                 for stmt in retirements:

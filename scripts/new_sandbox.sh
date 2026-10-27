@@ -21,7 +21,7 @@ fi
 for i in $(seq 1 30); do
   STATE="$(databricks postgres get-endpoint "projects/${PROJECT}/branches/${BRANCH_ID}/endpoints/primary" -o json \
     | python -c "import sys,json;print(json.load(sys.stdin)['status']['current_state'])" 2>/dev/null || true)"
-  [ "$STATE" = "ACTIVE" ] && echo "Endpoint ACTIVE" && exit 0
+  [ "$STATE" = "ACTIVE" ] || [ "$STATE" = "IDLE" ] && echo "Endpoint ready ($STATE)" && exit 0
   sleep 2
 done
 echo "Endpoint did not become ready in time" && exit 1

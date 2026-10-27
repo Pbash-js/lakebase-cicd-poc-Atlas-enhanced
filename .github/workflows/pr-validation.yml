@@ -54,10 +54,11 @@ jobs:
 
       - name: Infra-file integrity gate
         env:
+          BASE: ${{ github.base_ref }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         run: |
-          git fetch -q origin ${{ github.base_ref }}
-          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- .github databricks.yml scripts)
+          git fetch -q "origin/${BASE}"
+          CHANGED=$(git --no-pager diff --no-renames --name-only "origin/${BASE}...HEAD" -- .github databricks.yml scripts)
           if [ -z "$CHANGED" ]; then
             echo "No infra/runner changes — gate passed"
             exit 0
@@ -70,12 +71,14 @@ jobs:
           exit 1
 
       - name: Migration immutability gate (generated files are never edited)
+        env:
+          BASE: ${{ github.base_ref }}
         run: |
-          git fetch -q origin ${{ github.base_ref }}
+          git fetch -q "origin/${BASE}"
           EXIT=0
-          for f in $(git diff --name-only origin/${{ github.base_ref }}...HEAD -- db/migrations); do
+          for f in $(git --no-pager diff --no-renames --name-only "origin/${BASE}...HEAD" -- db/migrations); do
             [ "$f" = "db/migrations/atlas.sum" ] && continue   # checksum file is rewritten by every generation; Atlas verifies it at apply time
-            if git cat-file -e origin/${{ github.base_ref }}:"$f" 2>/dev/null; then
+            if git cat-file -e "origin/${BASE}:"$f" 2>/dev/null; then
               echo "::error::$f already exists on the base branch: generated migrations are immutable — fix is a NEW migration (edit db/schema/schema.sql and regenerate)"
               EXIT=1
             fi
@@ -84,13 +87,14 @@ jobs:
 
       - name: Destructive-change gate (regex lint on NEW migrations; not a parser)
         env:
+          BASE: ${{ github.base_ref }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         run: |
-          git fetch -q origin ${{ github.base_ref }}
+          git fetch -q "origin/${BASE}"
           EXIT=0
-          for f in $(git diff --name-only origin/${{ github.base_ref }}...HEAD -- db/migrations); do
+          for f in $(git --no-pager diff --no-renames --name-only "origin/${BASE}...HEAD" -- db/migrations); do
             [ "$f" = "db/migrations/atlas.sum" ] && continue
-            git cat-file -e origin/${{ github.base_ref }}:"$f" 2>/dev/null && continue   # only NEW files
+            git cat-file -e "origin/${BASE}:"$f" 2>/dev/null && continue   # only NEW files
             if grep -inE 'DROP[[:space:]]+(TABLE|SCHEMA|COLUMN)|TRUNCATE([[:space:]]|;|$)' "$f"; then
               echo "::error::$f contains destructive DDL (DROP TABLE/SCHEMA/COLUMN, TRUNCATE): add the 'destructive-approved' label after review, or remove it"
               EXIT=1
@@ -106,12 +110,12 @@ jobs:
           exit $EXIT
 
       - name: Install Databricks CLI + Python deps
-        uses: databricks/setup-cli@main
+        uses: databricks/setup-cli@v1.22.1
         with:
           version: 1.17.0
 
       - name: Install Python deps
-        run: pip3 install "psycopg[binary]" pytest
+        run: pip3 install "psycopg[binary]==3.2.9" "pytest==8.3.5"
 
       - name: Recreate Ephemeral PR Branch (fresh fork of CURRENT production every run)
         env:
@@ -165,6 +169,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-v1.3.5
+          echo "bfc65a52d3b745178c619a314052580861a385c364ae5abece174286055d525a  /tmp/atlas" | sha256sum -c -   # supply-chain: pinned v1.3.5 checksum
           chmod +x /tmp/atlas
           if OUT=$(./scripts/gen_migration.sh --check 2>&1); then
             echo "✓ db/schema/schema.sql matches db/migrations"
