@@ -18,12 +18,26 @@ jobs:
     runs-on: ubuntu-latest
     environment: production   # put required reviewers here
     permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
+      # Pro mode: official Atlas install with the bot token (grant cached for
+      # offline access). The script steps use this binary via ATLAS_BIN above.
+      - name: Atlas Cloud setup (Pro only)
+        if: vars.ATLAS_EDITION == 'pro'
+        uses: ariga/setup-atlas@v0
+        with:
+          cloud-token: ${{ secrets.ATLAS_CLOUD_TOKEN }}
+
       - name: Resolve target branch
+        env:
+          TB_IN: ${{ github.event.inputs.target_branch }}   # never interpolate inputs into shell
         run: |
-          TB="${{ github.event.inputs.target_branch }}"
+          TB="$TB_IN"
+          if [ -n "$TB" ] && ! echo "$TB" | grep -qE '^[a-z][a-z0-9-]{0,62}$'; then
+            echo "::error::invalid target_branch (must match ^[a-z][a-z0-9-]{0,62}$)"; exit 1
+          fi
           if [ -z "$TB" ]; then TB="production"; fi
           if [ "$TB" = "production" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "::error::manual runs never touch production — pass a rehearsal branch or push to main"
@@ -32,12 +46,12 @@ jobs:
           echo "TARGET_BRANCH=$TB" >> "$GITHUB_ENV"
 
       - name: Install Databricks CLI
-        uses: databricks/setup-cli@main
+        uses: databricks/setup-cli@v1.22.1
         with:
           version: 1.17.0
 
       - name: Install Python deps
-        run: pip3 install "psycopg[binary]" pytest
+        run: pip3 install "psycopg[binary]==3.2.9" "pytest==8.3.5"
 
       - name: Deploy Infrastructure Assets via DABs
         if: env.TARGET_BRANCH == 'production'
@@ -51,6 +65,7 @@ jobs:
       - name: Install Atlas CE (pinned)
         run: |
           curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-v1.3.5
+          echo "bfc65a52d3b745178c619a314052580861a385c364ae5abece174286055d525a  /tmp/atlas" | sha256sum -c -   # supply-chain: pinned v1.3.5 checksum
           chmod +x /tmp/atlas
 
       # Pro mode: push the migration directory to the Atlas Cloud Schema
@@ -115,6 +130,7 @@ jobs:
         with:
           dir: 'file://db/migrations'
           url: '${{ steps.cred.outputs.url }}'
+          tx-mode: all   # one transaction for the whole pending batch (CE script parity)
 
       - name: Replay objects + run smoke tests (Pro track)
         if: vars.ATLAS_EDITION == 'pro'
@@ -125,7 +141,7 @@ jobs:
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           TARGET_BRANCH: ${{ env.TARGET_BRANCH }}
-          ATLAS_BIN: /tmp/atlas
+          ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
           SKIP_MIGRATIONS: "1"
         run: ./scripts/deploy_db.sh
 
@@ -140,5 +156,5 @@ jobs:
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           TARGET_BRANCH: ${{ env.TARGET_BRANCH }}
-          ATLAS_BIN: /tmp/atlas
+          ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
         run: ./scripts/deploy_db.sh

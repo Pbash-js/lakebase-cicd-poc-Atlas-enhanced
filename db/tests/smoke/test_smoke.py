@@ -12,6 +12,13 @@ def test_migrations_exactly_once():
     with _conn() as c:
         n = c.execute("SELECT count(*) FROM atlas_schema_revisions.atlas_schema_revisions").fetchone()[0]
         assert n >= 2
+        # the ledger must be at the newest migration file, not merely non-empty:
+        # a partially applied deploy must fail the smoke suite.
+        from pathlib import Path
+        versions = sorted(p.name.split("_")[0] for p in Path("db/migrations").glob("*.sql"))
+        newest = versions[-1]
+        top = c.execute("SELECT max(version) FROM atlas_schema_revisions.atlas_schema_revisions").fetchone()[0]
+        assert str(top) == newest, f"ledger at {top}, newest migration is {newest}"
 
 def test_function_and_view():
     with _conn() as c:
