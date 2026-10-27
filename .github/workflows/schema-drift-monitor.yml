@@ -24,9 +24,9 @@ jobs:
       - name: Install Python deps
         run: pip3 install "psycopg[binary]"
 
-      - name: Install Atlas CE
+      - name: Install Atlas CE (pinned)
         run: |
-          curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-latest
+          curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-v1.3.5
           chmod +x /tmp/atlas
 
       - name: Run drift probe (production vs Git)

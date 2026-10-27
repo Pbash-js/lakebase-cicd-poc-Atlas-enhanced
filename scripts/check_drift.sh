@@ -32,6 +32,7 @@ HOST="$(databricks postgres get-endpoint "$PROD_EP" --output json \
   | python -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")"
 TOKEN="$(databricks postgres generate-database-credential "$PROD_EP" --output json \
   | python -c "import sys,json;print(json.load(sys.stdin)['token'])")"
+echo "::add-mask::${TOKEN}"   # never leak the runtime credential in logs
 ENCODED_USER="$(python -c "import urllib.parse;print(urllib.parse.quote('${DATABRICKS_PG_USER}', safe=''))")"
 PROD_URL="postgres://${ENCODED_USER}:${TOKEN}@${HOST}:5432/databricks_postgres?sslmode=require"
 
@@ -100,6 +101,7 @@ PROBE_HOST="$(databricks postgres get-endpoint "$PROBE_EP" --output json \
   | python -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")"
 PROBE_TOKEN="$(databricks postgres generate-database-credential "$PROBE_EP" --output json \
   | python -c "import sys,json;print(json.load(sys.stdin)['token'])")"
+echo "::add-mask::${PROBE_TOKEN}"
 
 python scripts/apply_objects.py \
   --host "$PROBE_HOST" --port 5432 --dbname databricks_postgres \

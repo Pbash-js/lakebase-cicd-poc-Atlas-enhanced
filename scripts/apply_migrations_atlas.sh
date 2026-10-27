@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 # Atlas-native migration apply engine (Community Edition).
-# REPLACES scripts/apply_migrations.py + migrations_runner.py + the
-# schema_migrations table: the ledger is now atlas_schema_revisions,
-# maintained entirely by Atlas. Never write to it by hand (except the
-# one-time baseline adoption below, which is the documented path).
+# The ledger is atlas_schema_revisions, maintained entirely by Atlas. Never
+# write to it by hand.
 #
-# Guarantees carried over (now enforced by Atlas):
-#   exactly-once via revisions ledger, checksum tamper detection via
-#   atlas_schema_revisions + atlas.sum, advisory lock so a second writer
-#   physically blocks (we previously relied only on CI serialization).
+# Guarantees: exactly-once via revisions ledger, checksum tamper detection
+# via atlas_schema_revisions + atlas.sum, advisory lock so a second writer
+# physically blocks, and --tx-mode all so the whole pending batch is ONE
+# transaction (a failure halfway leaves nothing applied).
+#
+# Baseline (adopting a pre-Atlas database) is an EXPLICIT OPERATOR STEP,
+# never automatic: a human decides what counts as already-applied and runs
+#   ATLAS_BASELINE=<version> ./scripts/apply_migrations_atlas.sh <host> <user> <token>
+# where <version> is the newest migration filename prefix in db/migrations/
+# (record the decision in the run log / ops doc). Baseline mode applies
+# nothing; it only writes the ledger row. A fresh database needs no baseline.
 #
 # Usage: apply_migrations_atlas.sh <host> <user> <token>
-#   ATLAS_BIN overrides the binary path; ATLAS_MIGRATIONS_DIR the dir.
+#   ATLAS_BIN overrides the binary path; ATLAS_MIGRATIONS_DIR the dir
+#   (repo-relative); ATLAS_BASELINE enables baseline mode (operator step).
 set -euo pipefail
 
 HOST="${1:?host}"; PGUSER="${2:?user}"; TOKEN="${3:?token}"
@@ -23,35 +29,10 @@ DIR="file://${REPO}/${ATLAS_MIGRATIONS_DIR:-db/migrations}"
 ENCODED_USER="$(python -c "import urllib.parse;print(urllib.parse.quote('${PGUSER}', safe=''))")"
 URL="postgres://${ENCODED_USER}:${TOKEN}@${HOST}:5432/databricks_postgres?sslmode=require"
 
-HAS_REVISIONS=$(python - "$URL" <<'PYEOF'
-import sys, psycopg
-with psycopg.connect(sys.argv[1]) as c:
-    # Atlas places the ledger in its own dedicated schema (not public).
-    n = c.execute("SELECT count(*) FROM information_schema.schemata WHERE schema_name='atlas_schema_revisions'").fetchone()[0]
-print("yes" if n else "no")
-PYEOF
-)
-
-if [ "$HAS_REVISIONS" = "no" ]; then
-  # Adoption: DB predates the Atlas ledger. If our legacy schema_migrations
-  # table or our app tables exist, everything up to the newest file in the
-  # dir is already applied: set the baseline (documented Atlas path) and
-  # apply nothing. A truly fresh database just applies from scratch.
-  LEGACY=$(python - "$URL" <<'PYEOF'
-import sys, psycopg
-with psycopg.connect(sys.argv[1]) as c:
-    legacy = c.execute("SELECT to_regclass('public.schema_migrations')").fetchone()[0]
-    tables = c.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('customers','orders','shipments')").fetchone()[0]
-print("legacy" if (legacy or tables) else "fresh")
-PYEOF
-)
-  if [ "$LEGACY" = "legacy" ]; then
-    BASELINE=$(ls db/migrations | grep -v atlas.sum | sort | tail -1 | cut -d_ -f1)
-    echo "▶ adopting pre-Atlas DB: baseline=${BASELINE} (no pending migrations expected)"
-    "$ATLAS_BIN" migrate apply --url "$URL" --dir "$DIR" \
-      --baseline "$BASELINE"
-    exit 0
-  fi
+if [ -n "${ATLAS_BASELINE:-}" ]; then
+  echo "▶ OPERATOR baseline adoption: baseline=${ATLAS_BASELINE} (nothing applies; ledger row only)"
+  "$ATLAS_BIN" migrate apply --url "$URL" --dir "$DIR" --baseline "$ATLAS_BASELINE"
+  exit 0
 fi
 
 # --tx-mode all: the entire batch applies in ONE transaction, so a failure

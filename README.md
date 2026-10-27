@@ -21,7 +21,7 @@ Start here. Each row says what you want to do and where to look.
 
 | You want to... | Do this | Read this section |
 | --- | --- | --- |
-| Make a schema change (tables, columns, indexes, enums) | Edit `db/schema/schema.sql`, push, open a PR. Nothing else: CI generates the migration | [Developer loop](#developer-loop) |
+| Make a schema change (tables, columns, indexes, enums) | Edit `db/schema/schema.sql`, run `./scripts/gen_migration.sh`, commit both, open a PR | [Developer loop](#developer-loop) |
 | Make a code-object change (function, procedure, view, trigger) | Edit the file under `db/objects/<layer>/`, push, open a PR | [Developer loop](#developer-loop) |
 | Delete an object or change a function signature/return type | Add a line to `db/objects/retirements.txt` in the same PR | [Retirements: drops and signature changes](#retirements-drops-and-signature-changes) |
 | Understand what CI blocks and why | See the gates table | [What CI fails on (exactly)](#what-ci-fails-on-exactly) |
@@ -81,9 +81,10 @@ path (PR to `main`, then CD).
 | `db/objects/<layer>/` | Code objects (functions, procedures, views, triggers), one file per object, replayed idempotently in layer order `01_types` -> `05_triggers`. The layer numbers are a manual topological sort: CE cannot model objects, so it cannot order them. |
 | `db/objects/retirements.txt` | DROP manifest applied before each replay, one statement per line. Deleting an object file does NOT drop the object; a function signature/return-type change cannot be replayed by `CREATE OR REPLACE` (it silently creates an overload). Both need a line here. |
 | `db/objects/drift_ignore.txt` | Reviewed ignore list for the drift probe's ghost check: object names that live on the database but are managed outside `db/objects/`. |
-| `db/tests/` | pytest suite run against the PR branch after deploy (final deploy stage; workflows carry no separate pytest step). |
+| `db/tests/smoke/` | Read-only smoke tests, safe against production. The default (and CD) suite. |
+| `db/tests/integration/` | Data-writing tests, dev/PR branches only (`TEST_SUITE=all`; refused against production). |
 | `scripts/gen_migration.sh` | The one command for schema changes: creates a dev branch, builds a throwaway scratch DB from `template0`, runs `atlas migrate diff`, writes the migration. `--check` mode fails when committed migrations do not converge to desired state. |
-| `scripts/apply_migrations_atlas.sh` | Applies pending migrations via `atlas migrate apply --tx-mode all`: the entire pending batch is ONE transaction, so a failure halfway through leaves nothing applied. Ledger: `atlas_schema_revisions` (Atlas-managed: exactly-once, per-revision checksums, advisory lock). First run against a pre-Atlas DB sets the baseline. |
+| `scripts/apply_migrations_atlas.sh` | Applies pending migrations via `atlas migrate apply --tx-mode all`: the entire pending batch is ONE transaction, so a failure halfway through leaves nothing applied. Ledger: `atlas_schema_revisions` (Atlas-managed: exactly-once, per-revision checksums, advisory lock). Baseline adoption is an explicit operator step: `ATLAS_BASELINE=<version>`, never auto-detected. |
 | `scripts/apply_objects.py` | Replays `db/objects/` in layer order, and applies `retirements.txt` first. The WHOLE run is one transaction: objects applied before a failure roll back with it. |
 | `scripts/check_drift.sh` | Drift probe: structural diff (live branch vs `schema.sql`) + object comparison (live branch vs a repo replay on a probe branch). Exits 1 on drift, 2 on probe error. |
 | `scripts/deploy_db.sh` | Deploy entrypoint: mints a 1-hour OAuth credential, then Atlas apply -> objects -> tests. Production is reachable only inside GitHub Actions CD. |
@@ -142,10 +143,10 @@ outside GitHub Actions CD.
 
 Three change shapes, each a PR:
 
-- **Schema change**: edit `db/schema/schema.sql` and push. Nothing else:
-  the CI bot generates the migration, commits it to the PR branch, comments
-  the planned SQL, and validates. If you forget to generate locally, CI
-  still converges.
+- **Schema change**: edit `db/schema/schema.sql`, run `./scripts/gen_migration.sh`,
+  commit BOTH files, push, open a PR. CI verifies the migration matches the
+  desired state; on drift it FAILS the check and comments the planned SQL
+  (CI never commits).
 - **Object change**: edit the object's file under `db/objects/`. It replays
   idempotently on the next deploy to any branch.
 - **Both**: one `schema.sql` edit plus object files in the same PR.
@@ -186,9 +187,9 @@ No automated undo. Two forward-moving paths:
 | Infra-file integrity | PR touches `.github/`, `scripts/` or `databricks.yml` without the `infra-approved` label |
 | Migration immutability | PR edits or deletes an existing file in `db/migrations/` (adding new ones is the only allowed change) |
 | Destructive change | NEW migration contains `DROP TABLE`, `DROP SCHEMA` or `TRUNCATE` without the `destructive-approved` label. Regex, not parsing: a tripwire for the bot-generated DROP, not a SQL analyzer. Non-concurrent `CREATE INDEX` warns only (it cannot be concurrent under `--tx-mode all`) |
-| Atlas plan check | CI regenerates from `schema.sql`; on drift it auto-commits the generated migration and re-runs (fails only if generation itself errors) |
+| Atlas plan check | `schema.sql` is not covered by `db/migrations`; the step comments the planned SQL on the PR and fails (CI never commits: run `./scripts/gen_migration.sh` locally) |
 | Atlas apply | `atlas.sum` mismatch (tampered history), or a migration fails against the PR branch |
-| Tests | pytest suite fails against the PR branch |
+| Tests | pytest fails on the PR branch (`TEST_SUITE=all` there: smoke + integration) |
 
 A label added after a run does not re-fire it. Re-trigger with a fresh
 event: an empty commit, or close/reopen the PR.
@@ -270,17 +271,17 @@ run through both paths on a Lakebase branch.
 
 ## Open items
 
-Rows already closed in this repo are not listed (per-PR branch recreation,
-one-transaction object replay, trigger recreate, retired-objects manifest).
+Closed since this section was written: production test split (smoke vs
+integration), CI fail-on-drift (no auto-commit), explicit baseline,
+three-dot merge-base diffs, pre-deploy recovery branch in CD, pinned Atlas
+version, credential masking. Decisions taken: GC stays weekly-only (no
+PR-close deletion for now), dev-branch TTL stays 7 days.
 
 | # | Change | Open item |
 | --- | --- | --- |
-| 1 | Production tests | Split the suite: read-only smoke tests that can run against production in CD, and data-writing integration tests that run on dev branches only |
-| 2 | CI auto-commit | The plan-check bot currently commits the generated migration and continues validating. Flip it to fail the check instead, so a failed push fails visibly and the dev commits the migration themselves |
-| 3 | Credentials | Replace the shared static `DATABRICKS_TOKEN` with OIDC workload federation and three service principals (SP-CI, SP-CD, SP-monitor) |
-| 4 | Baseline | Replace automatic baseline detection in `apply_migrations_atlas.sh` with an explicit, recorded operator step |
-| 5 | Change detection | Compare against the merge base (three-dot diff) in the gates so older PRs do not fail falsely after main moves |
-| 6 | Recovery | Create a pre-deploy recovery branch (PITR fork) in cd-promotion before applying to production |
-| 7 | Bundle targets | One bundle with four targets (Dev, QA, Stage, Prod); the Lakebase project is created once per workspace, since bundles cannot adopt an existing project |
-| 8 | Tooling | Pin the Atlas version in workflows (the CLI action is pinned to 1.17.0; Atlas installs `latest`) and mask runtime credentials in logs |
-| 9 | Ownership | Assign CODEOWNERS to a team instead of individuals; mark the `production` Lakebase branch protected |
+| 1 | Credentials | Replace the shared static `DATABRICKS_TOKEN` with OIDC workload federation and three service principals (SP-CI, SP-CD, SP-monitor): each SP gets a GitHub federation policy (issuer `token.actions.githubusercontent.com`, environment-based subject), workspace access and a least-privilege Lakebase Postgres role; workflows switch to `DATABRICKS_AUTH_TYPE=github-oidc` |
+| 2 | Bundle targets | One bundle with four targets (Dev, QA, Stage, Prod); the Lakebase project is created once per workspace, since bundles cannot adopt an existing project. Needs the workspaces to exist (platform team) |
+| 3 | Ownership | Assign CODEOWNERS to a team instead of individuals; mark the `production` Lakebase branch protected |
+
+Carried from v1, still open: RBAC as code, AI-impact review (AI Gateway),
+multi-environment promotion with the platform team.

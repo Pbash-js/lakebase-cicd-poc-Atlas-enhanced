@@ -28,10 +28,30 @@ jobs:
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: databricks bundle deploy -t prod
 
-      - name: Install Atlas CE
+      - name: Install Atlas CE (pinned)
         run: |
-          curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-latest
+          curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-v1.3.5
           chmod +x /tmp/atlas
+
+      - name: Pre-deploy recovery branch (PITR fork of production)
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
+        run: |
+          RB="recovery-${{ github.run_id }}"
+          BR_PATH="projects/${{ secrets.LAKEBASE_PROJECT }}/branches/${RB}"
+          echo "▶ creating ${RB} off production (24h TTL) — rollback point for this deploy"
+          databricks postgres delete-branch "$BR_PATH" 2>/dev/null || true
+          for i in $(seq 1 15); do
+            databricks postgres get-branch "$BR_PATH" --output json >/dev/null 2>&1 || break
+            [ "$i" = 15 ] && { echo "::error::stale ${RB} did not delete in time"; exit 1; }
+            sleep 2
+          done
+          databricks postgres create-branch "projects/${{ secrets.LAKEBASE_PROJECT }}" "$RB" \
+            --json '{"spec":{"source_branch":"projects/${{ secrets.LAKEBASE_PROJECT }}/branches/production","ttl":"86400s"}}'
+          echo "recovery_branch=${RB}" >> "$GITHUB_OUTPUT"
+        id: recovery
 
       - name: Apply Migrations + Objects to Production (Atlas-native ledger, exactly-once)
         env:
