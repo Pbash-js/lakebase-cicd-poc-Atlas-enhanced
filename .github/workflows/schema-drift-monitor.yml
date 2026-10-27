@@ -1,0 +1,96 @@
+name: Schema Drift Monitor (scheduled)
+on:
+  schedule: [{ cron: "0 4 * * *" }]   # daily 04:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: schema-drift-monitor
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Databricks CLI (pinned)
+        uses: databricks/setup-cli@main
+        with:
+          version: 1.17.0
+
+      - name: Install Python deps
+        run: pip3 install "psycopg[binary]"
+
+      - name: Install Atlas CE (pinned)
+        run: |
+          curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-v1.3.5
+          chmod +x /tmp/atlas
+
+      - name: Run drift probe (production vs Git)
+        id: probe
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
+          LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
+          DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
+          ATLAS_BIN: /tmp/atlas
+        run: |
+          if ./scripts/check_drift.sh > drift_report.txt 2>&1; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          fi
+          # a probe ERROR (exit 2) is not drift: surface it as a distinct title
+          if grep -qE 'schema diff failed|object replay|did not delete|not ready|atlas CLI not found|python not found' drift_report.txt; then
+            echo "kind=error" >> "$GITHUB_OUTPUT"
+          else
+            echo "kind=drift" >> "$GITHUB_OUTPUT"
+          fi
+          cat drift_report.txt
+
+      - name: Open or update the drift issue
+        if: steps.probe.outputs.drift == 'true' && steps.probe.outputs.kind == 'drift'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="Schema drift: production differs from Git"
+          {
+            echo "The scheduled drift probe found production diverging from Git."
+            echo ""
+            echo "Run: $RUN_URL"
+            echo ""
+            echo "<details><summary>Drift report</summary>"
+            echo ""
+            echo '```'
+            head -c 60000 drift_report.txt
+            echo '```'
+            echo "</details>"
+          } > body.md
+          NUM=$(gh issue list --label schema-drift --state open --json number --jq '.[0].number' || echo "")
+          if [ -n "$NUM" ]; then
+            gh issue edit "$NUM" --title "$TITLE" --body-file body.md
+          else
+            gh issue create --title "$TITLE" --body-file body.md --label schema-drift
+          fi
+
+      - name: Probe error (not drift), open the issue too
+        if: steps.probe.outputs.drift == 'true' && steps.probe.outputs.kind == 'error'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="Schema drift probe FAILED (auth/connectivity/replay error, not drift)"
+          gh issue create --title "$TITLE" \
+            --body "The probe errored instead of measuring. Check workflow logs." \
+            --label schema-drift || true
+
+      - name: Fail the run on drift
+        if: steps.probe.outputs.drift == 'true'
+        run: |
+          echo "::error::drift detected between production and Git, see the schema-drift issue"
+          exit 1

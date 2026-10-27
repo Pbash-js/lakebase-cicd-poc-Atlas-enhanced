@@ -9,21 +9,55 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    services:
+      # Official Atlas CI pattern (atlasgo.io/guides/ci-platforms/github-versioned):
+      # a throwaway postgres container serves as the dev-database for lint
+      # analysis. Only used by the Pro lint step; idle under CE.
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: dev
+          POSTGRES_PASSWORD: pass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-start-period 10s
+          --health-timeout 5s
+          --health-retries 5
     permissions:
-      contents: write     # Atlas CE auto-generates migrations and commits them to the PR branch
-      pull-requests: write # and comments the generated SQL on the PR
+      pull-requests: write # comments the generated SQL on the PR; no contents:write — CI never commits
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.ref }}   # commit on the PR branch, not the merge ref
           fetch-depth: 0
 
+      # Pro mode: official Atlas Cloud integration — installs Atlas with the
+      # bot token (grant cached for offline access) and posts a native lint
+      # report on the PR. Skipped entirely under CE.
+      - name: Atlas Cloud setup + native lint (Pro only)
+        if: vars.ATLAS_EDITION == 'pro'
+        uses: ariga/setup-atlas@v0
+        with:
+          cloud-token: ${{ secrets.ATLAS_CLOUD_TOKEN }}
+      - name: Atlas Cloud lint report (Pro only)
+        if: vars.ATLAS_EDITION == 'pro'
+        uses: ariga/atlas-action/migrate/lint@v1
+        with:
+          dir: 'file://db/migrations'
+          dev-url: 'postgres://postgres:pass@localhost:5432/dev?search_path=public&sslmode=disable'
+          dir-name: 'lakebase-cicd-poc'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Infra-file integrity gate
         env:
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         run: |
           git fetch -q origin ${{ github.base_ref }}
-          CHANGED=$(git diff --name-only origin/${{ github.base_ref }} HEAD -- .github databricks.yml scripts)
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- .github databricks.yml scripts)
           if [ -z "$CHANGED" ]; then
             echo "No infra/runner changes — gate passed"
             exit 0
@@ -39,13 +73,36 @@ jobs:
         run: |
           git fetch -q origin ${{ github.base_ref }}
           EXIT=0
-          for f in $(git diff --name-only origin/${{ github.base_ref }} HEAD -- db/migrations); do
+          for f in $(git diff --name-only origin/${{ github.base_ref }}...HEAD -- db/migrations); do
             [ "$f" = "db/migrations/atlas.sum" ] && continue   # checksum file is rewritten by every generation; Atlas verifies it at apply time
             if git cat-file -e origin/${{ github.base_ref }}:"$f" 2>/dev/null; then
               echo "::error::$f already exists on the base branch: generated migrations are immutable — fix is a NEW migration (edit db/schema/schema.sql and regenerate)"
               EXIT=1
             fi
           done
+          exit $EXIT
+
+      - name: Destructive-change gate (regex lint on NEW migrations; not a parser)
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        run: |
+          git fetch -q origin ${{ github.base_ref }}
+          EXIT=0
+          for f in $(git diff --name-only origin/${{ github.base_ref }}...HEAD -- db/migrations); do
+            [ "$f" = "db/migrations/atlas.sum" ] && continue
+            git cat-file -e origin/${{ github.base_ref }}:"$f" 2>/dev/null && continue   # only NEW files
+            if grep -inE 'DROP[[:space:]]+(TABLE|SCHEMA)|TRUNCATE([[:space:]]|;|$)' "$f"; then
+              echo "::error::$f contains destructive DDL (DROP TABLE/SCHEMA, TRUNCATE): add the 'destructive-approved' label after review, or remove it"
+              EXIT=1
+            fi
+            # CREATE INDEX CONCURRENTLY is impossible under --tx-mode all, so this warns only
+            if grep -iE 'CREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX' "$f" | grep -viqE 'CONCURRENTLY'; then
+              echo "::warning::$f uses a non-concurrent CREATE INDEX: locks writes for the index build duration on large tables"
+            fi
+          done
+          case " $LABELS " in
+            *" destructive-approved "*) echo "destructive-approved label present — destructive DDL allowed"; EXIT=0;;
+          esac
           exit $EXIT
 
       - name: Install Databricks CLI + Python deps
@@ -56,24 +113,32 @@ jobs:
       - name: Install Python deps
         run: pip3 install "psycopg[binary]" pytest
 
-      - name: Provision Ephemeral PR Branch (idempotent — reuse on PR update)
+      - name: Recreate Ephemeral PR Branch (fresh fork of CURRENT production every run)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
           PR_ID: ${{ github.event.pull_request.number }}
         run: |
           PR_BRANCH="pr-${PR_ID}"
-          if databricks postgres get-branch "projects/${{ secrets.LAKEBASE_PROJECT }}/branches/$PR_BRANCH" --output json >/dev/null 2>&1; then
-            echo "Branch $PR_BRANCH already exists — reusing"
-          else
-            databricks postgres create-branch "projects/${{ secrets.LAKEBASE_PROJECT }}" "$PR_BRANCH" \
-              --json '{"spec":{"source_branch":"projects/${{ secrets.LAKEBASE_PROJECT }}/branches/production","ttl":"86400s"}}'
-          fi
+          BR_PATH="projects/${{ secrets.LAKEBASE_PROJECT }}/branches/${PR_BRANCH}"
+          echo "▶ recreating ${PR_BRANCH} off current production (24h TTL)"
+          databricks postgres delete-branch "$BR_PATH" 2>/dev/null || echo "  (no existing branch)"
+          for i in $(seq 1 15); do   # deletion is async; wait until it is gone
+            databricks postgres get-branch "$BR_PATH" --output json >/dev/null 2>&1 || break
+            [ "$i" = 15 ] && { echo "::error::old ${PR_BRANCH} did not delete in time"; exit 1; }
+            sleep 2
+          done
+          databricks postgres create-branch "projects/${{ secrets.LAKEBASE_PROJECT }}" "$PR_BRANCH" \
+            --json '{"spec":{"source_branch":"projects/${{ secrets.LAKEBASE_PROJECT }}/branches/production","ttl":"86400s"}}'
 
       - name: Wait for Endpoint Readiness
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
           PR_ID: ${{ github.event.pull_request.number }}
         run: |
           PR_BRANCH="pr-${PR_ID}"
@@ -87,57 +152,49 @@ jobs:
           done
           echo "Endpoint did not become ready" && exit 1
 
-      - name: Atlas CE Plan (desired state vs migrations — auto-generate on drift)
+      - name: Atlas CE Plan (desired state vs migrations — FAIL on drift; CI never commits)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           PR_ID: ${{ github.event.pull_request.number }}
           ATLAS_BIN: /tmp/atlas
           GH_TOKEN: ${{ github.token }}
         run: |
-          curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-latest
+          curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-v1.3.5
           chmod +x /tmp/atlas
           if OUT=$(./scripts/gen_migration.sh --check 2>&1); then
             echo "✓ db/schema/schema.sql matches db/migrations"
             exit 0
           fi
+          # Drift: FAIL the check. CI never commits: the dev runs
+          # ./scripts/gen_migration.sh locally and commits the generated file.
           echo "$OUT"
-          # Drift: generate the migration here, commit it to the PR branch,
-          # comment, and re-run. The dev only edits schema.sql and pushes.
-          F=$(TARGET_BRANCH="pr-${{ github.event.pull_request.number }}" ./scripts/gen_migration.sh atlas_planned 2>&1 | grep -oE '[0-9]{14}_[a-z0-9_]+\.sql' | tail -1 || true)
-          NEWFILE="db/migrations/$F"
-          if [ -z "$F" ] || [ ! -f "$NEWFILE" ]; then
-            echo "::error::plan drift detected but generation failed:"
-            cat "$OUT"
-            exit 1
-          fi
-          git config user.name "atlas-ce-bot"
-          git config user.email "atlas-ce-bot@users.noreply.github.com"
-          git add db/migrations
-          git commit -m "Atlas CE: generate migration from db/schema/schema.sql"
-          git push origin HEAD:refs/heads/${{ github.event.pull_request.head.ref }} || echo "push failed (concurrent update) — next run re-plans"
           {
-            echo "### Atlas CE auto-generated a migration"
+            echo "### Atlas CE plan check: db/schema/schema.sql drifted from db/migrations"
             echo ""
-            echo "Committed \`${NEWFILE}\` to this PR from \`db/schema/schema.sql\`. Planned SQL:"
+            echo "Run \`./scripts/gen_migration.sh\` locally, commit the generated file, and push. Planned SQL:"
             echo ""
             echo '```sql'
-            sed -n '1,200p' "$NEWFILE"
+            printf '%s\n' "$OUT" | sed -n '/-- .*--/,$p' | head -200
             echo '```'
-            echo ""
-            echo "_Validation continues below with this file applied to the PR branch._"
           } > plan.md
           gh pr comment ${{ github.event.pull_request.number }} --body-file plan.md || true
-          exit 0
+          echo "::error::plan drift: schema.sql is not covered by db/migrations — generate locally and commit (see the PR comment)"
+          exit 1
 
       - name: Run Migrations (Atlas CE apply — exactly-once)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           TARGET_BRANCH: pr-${{ github.event.pull_request.number }}
           ATLAS_BIN: /tmp/atlas
+          TEST_SUITE: all
         run: ./scripts/deploy_db.sh

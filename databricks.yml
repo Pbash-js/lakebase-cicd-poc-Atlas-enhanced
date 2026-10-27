@@ -1,35 +1,80 @@
 bundle:
   name: lakebase-cicd-poc
 
+# Four workspace targets (architectural demonstration). Only prod points at a
+# real workspace today; dev/qa/stage are STUBS with placeholder project ids.
+# Each workspace's Lakebase project is created ONCE, out-of-band, and then
+# recorded as that target's project id in the branch/endpoint paths: DABs
+# cannot adopt an existing postgres_project (no replace_existing on that
+# resource), so the project is never declared in the bundle. Branches and
+# endpoints ARE declared and adopted (replace_existing).
+#
+# To activate a stub: replace <STUB-*> with the real project id of that
+# workspace's project, set the target's DATABRICKS_HOST in the deploy
+# environment, and create the production branch + primary endpoint once via
+# CLI/console before the first bundle deploy.
+#
+# Workspace isolation model: each target is a SEPARATE Databricks workspace
+# (own catalog, own identity, own secrets, own Lakebase project) — the same
+# commit travels Dev -> QA -> Stage -> Prod through the identical pipeline.
+
 targets:
   dev:
     mode: development
     default: true
+
+  qa:
+    mode: production   # staging-grade target in the demonstration topology
+    resources:
+      postgres_branches:
+        prod_branch:
+          parent: projects/<STUB-QA-PROJECT-ID>
+          branch_id: production
+          no_expiry: true
+          replace_existing: true
+      postgres_endpoints:
+        prod_endpoint:
+          parent: projects/<STUB-QA-PROJECT-ID>/branches/production
+          endpoint_id: primary
+          endpoint_type: ENDPOINT_TYPE_READ_WRITE
+          autoscaling_limit_min_cu: 1
+          autoscaling_limit_max_cu: 1
+          replace_existing: true
+
+  stage:
+    mode: production
+    resources:
+      postgres_branches:
+        prod_branch:
+          parent: projects/<STUB-STAGE-PROJECT-ID>
+          branch_id: production
+          no_expiry: true
+          replace_existing: true
+      postgres_endpoints:
+        prod_endpoint:
+          parent: projects/<STUB-STAGE-PROJECT-ID>/branches/production
+          endpoint_id: primary
+          endpoint_type: ENDPOINT_TYPE_READ_WRITE
+          autoscaling_limit_min_cu: 1
+          autoscaling_limit_max_cu: 1
+          replace_existing: true
+
   prod:
     mode: production
+    resources:
+      postgres_branches:
+        prod_branch:
+          parent: projects/core-app-db
+          branch_id: production
+          no_expiry: true
+          # is_protected: true   # enable on a real prod tier; keep off for POC teardown
+          replace_existing: true # REQUIRED: adopt the implicitly created branch
 
-# The project itself is NOT declared here: DABs cannot adopt an existing
-# postgres_project (no replace_existing on that resource) and a second deploy
-# would fail with "project already exists". The project is created once (CLI or
-# console); the bundle manages branches + endpoints, which DO support adoption.
-resources:
-  postgres_branches:
-    prod_branch:
-      parent: projects/core-app-db
-      branch_id: production
-      no_expiry: true
-      # is_protected: true   # enable on a real prod tier; keep off for POC teardown
-      replace_existing: true # REQUIRED: adopt the implicitly created branch
-
-  postgres_endpoints:
-    prod_endpoint:
-      parent: projects/core-app-db/branches/production
-      endpoint_id: primary
-      endpoint_type: ENDPOINT_TYPE_READ_WRITE
-      autoscaling_limit_min_cu: 1   # match the existing Free Edition project default
-      autoscaling_limit_max_cu: 1   # Free Edition cap; raise on paid tiers
-      replace_existing: true        # REQUIRED: adopt the implicit primary endpoint
-
-# cd trigger: also fires on workflow changes
-
-# Atlas CE: stage 1 = atlas migrate apply (CE ledger)
+      postgres_endpoints:
+        prod_endpoint:
+          parent: projects/core-app-db/branches/production
+          endpoint_id: primary
+          endpoint_type: ENDPOINT_TYPE_READ_WRITE
+          autoscaling_limit_min_cu: 1   # match the existing Free Edition project default
+          autoscaling_limit_max_cu: 1   # Free Edition cap; raise on paid tiers
+          replace_existing: true        # REQUIRED: adopt the implicit primary endpoint

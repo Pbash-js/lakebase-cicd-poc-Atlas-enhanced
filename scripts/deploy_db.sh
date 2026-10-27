@@ -88,11 +88,16 @@ ENDPOINT="projects/${LAKEBASE_PROJECT}/branches/${TARGET_BRANCH}/endpoints/prima
 echo "▶ target: $TARGET_BRANCH  (project: $LAKEBASE_PROJECT)"
 HOST="$(databricks postgres get-endpoint "$ENDPOINT" --output json | python -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")"
 TOKEN="$(databricks postgres generate-database-credential "$ENDPOINT" --output json | python -c "import sys,json;print(json.load(sys.stdin)['token'])")"
+echo "::add-mask::${TOKEN}"   # never leak the runtime credential in logs
 
 cd "$(dirname "$0")/.."
 
 echo "▶ 1/3 migrations (Atlas-native apply, exactly-once, atlas.sum + revision checksums)"
-ATLAS_BIN="${ATLAS_BIN:-atlas}" ./scripts/apply_migrations_atlas.sh "${HOST}" "${DATABRICKS_PG_USER}" "${TOKEN}"
+if [ -n "${SKIP_MIGRATIONS:-}" ]; then
+  echo "  skipped (SKIP_MIGRATIONS=1 — migrations were applied by the official Atlas action)"
+else
+  ATLAS_BIN="${ATLAS_BIN:-atlas}" ./scripts/apply_migrations_atlas.sh "${HOST}" "${DATABRICKS_PG_USER}" "${TOKEN}"
+fi
 
 echo "▶ 2/3 objects (idempotent replay)"
 python scripts/apply_objects.py \
@@ -113,9 +118,22 @@ fi
 if [ "${SKIP_TESTS:-}" = 1 ]; then
   echo "▶ SKIP_TESTS=1 — tests skipped"
 elif [ -d db/tests ]; then
-  echo "▶ tests"
-  PGHOST="${HOST}" PGUSER="${DATABRICKS_PG_USER}" PGPASSWORD="${TOKEN}" \
-    python -m pytest db/tests -q
+  # TEST_SUITE: smoke (read-only, safe for production CD) | all (smoke +
+  # integration; integration writes data, dev/PR branches only). Default
+  # smoke: CD must never run data-writing tests against production.
+  SUITE="${TEST_SUITE:-smoke}"
+  echo "▶ tests (suite: ${SUITE})"
+  if [ "$SUITE" = "all" ] && [ "$TARGET_BRANCH" = "production" ]; then
+    echo "✗ TEST_SUITE=all is refused against production: integration tests write data." >&2
+    exit 1
+  fi
+  if [ "$SUITE" = "all" ]; then
+    PGHOST="${HOST}" PGUSER="${DATABRICKS_PG_USER}" PGPASSWORD="${TOKEN}" \
+      python -m pytest db/tests -q
+  else
+    PGHOST="${HOST}" PGUSER="${DATABRICKS_PG_USER}" PGPASSWORD="${TOKEN}" \
+      python -m pytest db/tests/smoke -q
+  fi
 else
   echo "▶ no db/tests directory — skipped"
 fi

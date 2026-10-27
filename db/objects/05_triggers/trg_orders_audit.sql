@@ -1,4 +1,6 @@
--- STATELESS: 05_triggers layer. Trigger function first (CREATE OR REPLACE), trigger guarded (no OR REPLACE).
+-- STATELESS: 05_triggers layer. Trigger function first (CREATE OR REPLACE),
+-- then the trigger via DROP IF EXISTS + CREATE: an IF NOT EXISTS guard would
+-- silently skip edits to an existing trigger, so edits must recreate it.
 CREATE OR REPLACE FUNCTION trg_orders_audit_fn()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -6,11 +8,7 @@ BEGIN
     RETURN NEW;
 END $$;
 
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_orders_audit') THEN
-    CREATE TRIGGER trg_orders_audit
-    AFTER UPDATE ON orders
-    FOR EACH ROW EXECUTE FUNCTION trg_orders_audit_fn();
-  END IF;
-END $$;
+DROP TRIGGER IF EXISTS trg_orders_audit ON orders;
+CREATE TRIGGER trg_orders_audit
+AFTER UPDATE ON orders
+FOR EACH ROW EXECUTE FUNCTION trg_orders_audit_fn();
