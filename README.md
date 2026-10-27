@@ -293,6 +293,8 @@ version, credential masking, bundle targets for Dev/QA/Stage/Prod
 (dev/qa/stage are placeholder stubs until the workspaces exist; prod is
 live), SP designations + Lakebase roles + app_pipeline ownership grants
 (docs/IDENTITIES.md).
+Decisions taken: GC stays weekly-only, dev-branch TTL stays 7 days,
+ownership review skipped for the POC.
 
 | # | Change | Open item |
 | --- | --- | --- |
