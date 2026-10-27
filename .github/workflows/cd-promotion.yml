@@ -27,6 +27,8 @@ jobs:
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
         run: databricks bundle deploy -t prod
 
       - name: Install Atlas CE (pinned)
@@ -38,6 +40,8 @@ jobs:
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
         run: |
           RB="recovery-${{ github.run_id }}"
@@ -58,6 +62,8 @@ jobs:
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           TARGET_BRANCH: production

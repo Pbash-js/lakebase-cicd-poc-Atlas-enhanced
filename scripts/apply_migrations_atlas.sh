@@ -24,9 +24,17 @@ HOST="${1:?host}"; PGUSER="${2:?user}"; TOKEN="${3:?token}"
 
 cd "$(dirname "$0")/.."
 if command -v cygpath >/dev/null 2>&1; then REPO=$(cygpath -m "$(pwd)"); else REPO=$(pwd); fi
+
 ATLAS_BIN="${ATLAS_BIN:-atlas}"
 DIR="file://${REPO}/${ATLAS_MIGRATIONS_DIR:-db/migrations}"
 ENCODED_USER="$(python -c "import urllib.parse;print(urllib.parse.quote('${PGUSER}', safe=''))")"
+
+# Out-of-band integrity check before touching the target: the migration dir
+# must be internally consistent (atlas.sum matches the files, no rebase or
+# missing files). Works in CE and Pro.
+echo "▶ atlas validate (dir integrity)"
+"$ATLAS_BIN" migrate validate --dir "$DIR" \
+  || { echo "✗ migration directory failed validation (tampered or rebased history)"; exit 1; }
 URL="postgres://${ENCODED_USER}:${TOKEN}@${HOST}:5432/databricks_postgres?sslmode=require"
 
 if [ -n "${ATLAS_BASELINE:-}" ]; then

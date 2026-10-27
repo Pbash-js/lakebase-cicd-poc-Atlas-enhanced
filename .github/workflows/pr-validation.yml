@@ -82,6 +82,8 @@ jobs:
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
           PR_ID: ${{ github.event.pull_request.number }}
         run: |
           PR_BRANCH="pr-${PR_ID}"
@@ -100,6 +102,8 @@ jobs:
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
           PR_ID: ${{ github.event.pull_request.number }}
         run: |
           PR_BRANCH="pr-${PR_ID}"
@@ -117,6 +121,8 @@ jobs:
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           PR_ID: ${{ github.event.pull_request.number }}
@@ -149,6 +155,8 @@ jobs:
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           TARGET_BRANCH: pr-${{ github.event.pull_request.number }}
