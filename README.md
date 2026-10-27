@@ -86,8 +86,9 @@ path (PR to `main`, then CD).
 | `scripts/gen_migration.sh` | The one command for schema changes: creates a dev branch, builds a throwaway scratch DB from `template0`, runs `atlas migrate diff`, writes the migration. `--check` mode fails when committed migrations do not converge to desired state. |
 | `scripts/apply_migrations_atlas.sh` | Applies pending migrations via `atlas migrate apply --tx-mode all`: the entire pending batch is ONE transaction, so a failure halfway through leaves nothing applied. Ledger: `atlas_schema_revisions` (Atlas-managed: exactly-once, per-revision checksums, advisory lock). Baseline adoption is an explicit operator step: `ATLAS_BASELINE=<version>`, never auto-detected. |
 | `scripts/apply_objects.py` | Replays `db/objects/` in layer order, and applies `retirements.txt` first. The WHOLE run is one transaction: objects applied before a failure roll back with it. |
-| `scripts/check_drift.sh` | Drift probe: structural diff (live branch vs `schema.sql`) + object comparison (live branch vs a repo replay on a probe branch). Exits 1 on drift, 2 on probe error. |
-| `scripts/deploy_db.sh` | Deploy entrypoint: mints a 1-hour OAuth credential, then Atlas apply -> objects -> tests. Production is reachable only inside GitHub Actions CD. |
+| `scripts/check_drift.sh` | Drift probe: structural diff (live branch vs `schema.sql`) + object comparison (live branch vs a repo replay on a probe branch). Exits 1 on drift, 2 on probe error. Pro mode (`ATLAS_EDITION=pro`): one object-aware `atlas schema diff` against `schema.sql + db/objects` — no probe branch needed |
+| `scripts/rollback_migration.sh` | Pro-only `atlas migrate down` wrapper: reverts the last N migrations with the migrations' pre-revert data checks enforced. Refuses production (restore the recovery branch instead). CE: not available — recovery branch or forward migration |
+| `scripts/deploy_db.sh` | Deploy entrypoint: mints a 1-hour OAuth credential, then Atlas validate -> apply -> objects -> tests. Production is reachable only inside GitHub Actions CD. |
 | `scripts/new_sandbox.sh` | One-command personal dev branch (7-day TTL). |
 | `.github/workflows/pr-validation.yml` | Per-PR checks (see the gates table below). Recreates the `pr-<n>` branch fresh off current production on every run. |
 | `.github/workflows/cd-promotion.yml` | On merge to main: DAB deploy + Atlas apply to production, serialized, never cancelled. |
@@ -272,6 +273,30 @@ Auth today is the static `DATABRICKS_TOKEN`. The OIDC switchover (3 SPs,
 federation policies, per-workspace subject strings) is fully specced and
 stubbed in [docs/IDENTITIES.md](docs/IDENTITIES.md); it is blocked because
 federation policies are account-level API, out of Free Edition reach.
+
+## Atlas edition switch (CE <-> Pro)
+
+Atlas is one binary: Pro features unlock with `ATLAS_TOKEN`. The switch is
+two repo settings, nothing else changes:
+
+| Setting | `ce` (today) | `pro` |
+| --- | --- | --- |
+| `ATLAS_EDITION` (Actions variable) | default | lint gate ON, object-aware drift diff ON |
+| `ATLAS_TOKEN` (Actions secret) | unused | Atlas Cloud API token |
+
+What Pro adds to the pipeline (all verified live on the trial):
+
+| Feature | Command | Where |
+| --- | --- | --- |
+| Native lint analyzers | `atlas migrate lint --latest` | `gen_migration.sh --check` rides the plan check on every PR |
+| Out-of-band integrity check | `atlas migrate validate` | `apply_migrations_atlas.sh` before every apply (works in CE too) |
+| Rollback with pre-revert checks | `atlas migrate down` | `scripts/rollback_migration.sh` (dev branches; production uses the recovery branch) |
+| Object-aware drift diff | `atlas schema diff` over `schema.sql + db/objects` | `check_drift.sh` Pro mode: no probe branch, no replay, covers functions/procedures/views/triggers + ghosts |
+
+Note: CI Pro mode needs an Atlas Cloud API token (Settings -> API Tokens at
+portal.ariga.io). The CLI login session token is NOT accepted as
+`ATLAS_TOKEN` (verified live). Until that token is added, keep
+`ATLAS_EDITION=ce`; locally, an `atlas login` session unlocks everything.
 
 ## Sources
 
