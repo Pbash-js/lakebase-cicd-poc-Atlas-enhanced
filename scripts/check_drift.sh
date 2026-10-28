@@ -221,12 +221,20 @@ for f in repo.glob("db/objects/**/*.sql"):
 
 # Reviewed ignore list: names on production that are managed outside
 # db/objects (e.g. legacy rbac helpers) and must not read as ghosts.
-ig = repo / "db/objects/drift_ignore.txt"
+ig = repo / "db/objects/drift_ignore.jsonl"
 if ig.is_file():
-    for raw in ig.read_text(encoding="utf-8").splitlines():
-        line = raw.strip().lower()
-        if line and not line.startswith("#"):
-            declared.add(line)
+    import json as _json
+    for i, raw in enumerate(ig.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            obj = _json.loads(line)
+            name = str(obj["object"]).strip().lower()
+            assert obj.get("reason"), "reason required"
+        except Exception as e:
+            raise SystemExit(f"drift_ignore.jsonl:{i}: bad entry ({e}); expected {{\"object\", \"reason\"}}") from e
+        declared.add(name)
 
 prod_lines, prod_names = dump(sys.argv[1])
 probe_lines, _ = dump(sys.argv[2])

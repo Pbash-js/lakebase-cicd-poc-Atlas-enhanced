@@ -49,8 +49,8 @@ db/
 ├── schema/                  desired state: tables, columns, indexes, constraints, enums
 ├── objects/
 │   ├── 02_functions/  03_procedures/  04_views/  05_triggers/
-│   ├── retirements.txt      drop manifest (retired objects, signature changes)
-│   └── drift_ignore.txt     reviewed out-of-band objects
+│   ├── retirements.jsonl    drop manifest (JSONL: stmt/reason/requested_in) (retired objects, signature changes)
+│   └── drift_ignore.jsonl   reviewed out-of-band objects (JSONL: object/reason)
 ├── migrations/              Atlas-generated + atlas.sum (immutable once applied)
 └── tests/                   pytest, final stage of every deploy
 scripts/
@@ -93,7 +93,7 @@ CE runs whenever `ATLAS_EDITION=ce` (the runtime default until the Pro license l
 | CE gap | Closure in this repo | Residual limit |
 | --- | --- | --- |
 | Objects unsupported | `db/objects/` replayed by `apply_objects.py` in layer order, one outer transaction | layer ordering is convention, not a dependency graph |
-| Object drops / signature changes | `retirements.txt` manifest, dependents before dependees, no CASCADE | manual authorship |
+| Object drops / signature changes | `retirements.jsonl` manifest, dependents before dependees, no CASCADE | manual authorship |
 | Trigger edits skipped | `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` in every trigger file | none |
 | No lint | regex destructive gate in `pr-validation.yml`: `DROP TABLE`/`DROP SCHEMA`/`TRUNCATE` fail a PR without the `destructive-approved` label | regex, not parsing |
 | No drift detection | `scripts/check_drift.sh`: structural diff + probe-branch replay + definition compare + ghost check | daily schedule, not continuous |
@@ -128,7 +128,7 @@ Two strategies behind one interface (`check_drift.sh`):
 | --- | --- | --- |
 | Structural | one `atlas schema diff` against `schema.sql + db/objects` | `atlas schema diff` vs `schema.sql` (`--schema public`, tooling schemas excluded) |
 | Objects | included in the single diff | probe branch off production (TTL-free source only; TTL branches cannot host children), replay `db/objects`, compare `pg_get_functiondef` / `pg_get_viewdef` / `pg_get_triggerdef` |
-| Ghost objects | included | production objects declared nowhere in `db/objects/` or `drift_ignore.txt` |
+| Ghost objects | included | production objects declared nowhere in `db/objects/` or `drift_ignore.jsonl` |
 
 Exit codes: 0 clean, 1 drift, 2 probe error. The scheduled workflow (`schema-drift-monitor.yml`) opens or updates a `schema-drift` issue with the full report; probe errors raise a distinct issue.
 
