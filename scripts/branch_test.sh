@@ -95,6 +95,51 @@ echo "::add-mask::${TOKEN}"   # never leak the runtime credential in logs
 
 cd "$(dirname "$0")/.."
 
+# --- Pro declarative inner loop ---------------------------------------------
+# Local Pro runs (GITHUB_ACTIONS unset) converge the branch to the FULL
+# desired state (db/schema + db/objects) with ONE `atlas schema apply`:
+# schema changes test without generating a migration first; the migration is
+# only frozen (gen_migration.sh) before the PR. CI/CD never take this path
+# (GITHUB_ACTIONS=true): the rehearsal must exercise the versioned artifacts,
+# and production must never be declaratively drifted to desired state.
+if [ "${ATLAS_EDITION:-ce}" = "pro" ] && [ "${GITHUB_ACTIONS:-}" != "true" ]; then
+  ATLAS_BIN="${ATLAS_BIN:-atlas}"
+  command -v "$ATLAS_BIN" >/dev/null 2>&1 || { echo "✗ atlas CLI not found (set ATLAS_BIN)"; exit 1; }
+  echo "▶ Pro declarative: schema apply (db/schema + db/objects -> ${TARGET_BRANCH})"
+  DESIRED=".tmp_pro/desired_deploy.sql"
+  python scripts/build_desired.py --out "$DESIRED" >/dev/null
+  SCRATCH="atlas_dev_$$"
+  ENC_USER="$(python -c "import urllib.parse;print(urllib.parse.quote('${DATABRICKS_PG_USER}', safe=''))")"
+  APP_URL="postgres://${ENC_USER}:${TOKEN}@${HOST}:5432/databricks_postgres?sslmode=require"
+  DEV_URL="postgres://${ENC_USER}:${TOKEN}@${HOST}:5432/${SCRATCH}?sslmode=require"
+  trap 'python - "$APP_URL" "$SCRATCH" <<PYEOF2
+import sys, psycopg
+try:
+    with psycopg.connect(sys.argv[1], autocommit=True) as c:
+        c.execute(f"DROP DATABASE IF EXISTS \"{sys.argv[2]}\"")
+except Exception as e:
+    print(f"cleanup warning: {e}", file=sys.stderr)
+PYEOF2' EXIT
+  python - "$APP_URL" "$SCRATCH" <<'PYEOF'
+import sys, psycopg
+with psycopg.connect(sys.argv[1], autocommit=True) as c:
+    c.execute(f'CREATE DATABASE "{sys.argv[2]}" TEMPLATE template0')
+PYEOF
+  command -v cygpath >/dev/null 2>&1 && DESIRED=$(cygpath -m "$DESIRED")  # Windows: file:// URLs need native paths
+  SCHEMAS="$(lb_schema_args | awk '{print $2}' | paste -sd,)"
+  # --exclude: legacy/ledger leftovers the drift probe already ignores
+  # (schema_migrations table, grant_* legacy rbac helpers).
+  python scripts/apply_desired.py \
+    --url "$APP_URL" \
+    --desired "$DESIRED" \
+    --dev-url "$DEV_URL" \
+    --atlas-bin "$ATLAS_BIN" \
+    --schemas "$SCHEMAS" \
+    --exclude "public.schema_migrations,public.grant_*" \
+    || { echo "✗ declarative apply failed"; exit 2; }
+  echo "  ✓ branch converged to desired state (declarative; no migration needed)"
+else
+
 echo "▶ 1/3 migrations (Atlas-native apply, exactly-once, atlas.sum + revision checksums)"
 if [ -n "${SKIP_MIGRATIONS:-}" ]; then
   echo "  skipped (SKIP_MIGRATIONS=1 — migrations were applied by the official Atlas action)"
@@ -118,6 +163,8 @@ if [ "$_rc" = 3 ]; then
 elif [ "$_rc" != 0 ]; then
   exit "$_rc"
 fi
+
+fi   # end CE/versioned track (see Pro declarative apply above)
 
 if [ "${SKIP_TESTS:-}" = 1 ]; then
   echo "▶ SKIP_TESTS=1 — tests skipped"

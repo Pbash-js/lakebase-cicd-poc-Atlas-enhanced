@@ -98,10 +98,12 @@ path (PR to `main`, then CD).
 | `db/tests/integration/` | Data-writing tests, dev/PR branches only (`TEST_SUITE=all`; refused against production). |
 | `scripts/gen_migration.sh` | The one command for schema changes: creates a dev branch, builds a throwaway scratch DB from `template0`, runs `atlas migrate diff`, writes the migration. `--check` mode fails when committed migrations do not converge to desired state. |
 | `scripts/apply_migrations_atlas.sh` | Applies pending migrations via `atlas migrate apply --tx-mode all`: the entire pending batch is ONE transaction, so a failure halfway through leaves nothing applied. Ledger: `atlas_schema_revisions` (Atlas-managed: exactly-once, per-revision checksums, advisory lock). Baseline adoption is an explicit operator step: `ATLAS_BASELINE=<version>`, never auto-detected. |
-| `scripts/apply_objects.py` | Replays `db/objects/` in layer order, and applies `retirements.jsonl` first. The WHOLE run is one transaction: objects applied before a failure roll back with it. |
+| `scripts/apply_objects.py` | Replays `db/objects/` in layer order, and applies `retirements.jsonl` first. The WHOLE run is one transaction: objects applied before a failure roll back with it. CE track and CI/CD only. |
+| `scripts/build_desired.py` | Builds the full Pro desired state (`db/schema/*.sql` + `db/objects` in layer order) to one file. Single source of truth for the declarative apply and the Pro drift diff. |
+| `scripts/apply_desired.py` | Pro declarative apply (local inner loop): plans with `atlas schema diff`, strips Lakebase platform-owned statements (event triggers are DB-level resources Atlas cannot `--exclude`), executes the plan in one transaction. |
 | `scripts/check_drift.sh` | Drift probe: structural diff (live branch vs `schema.sql`) + object comparison (live branch vs a repo replay on a probe branch). Exits 1 on drift, 2 on probe error. Pro mode (`ATLAS_EDITION=pro`): one object-aware `atlas schema diff` against `schema.sql + db/objects`, no probe branch needed |
 | `scripts/rollback_migration.sh` | Pro-only `atlas migrate down` wrapper: reverts the last N migrations with the migrations' pre-revert data checks enforced. Refuses production (restore the recovery branch instead). CE: not available, recovery branch or forward migration |
-| `scripts/branch_test.sh` | Deploy entrypoint: mints a 1-hour OAuth credential, then Atlas validate -> apply -> objects -> tests. Production is reachable only inside GitHub Actions CD. |
+| `scripts/branch_test.sh` | Deploy entrypoint: mints a 1-hour OAuth credential, then tests. Pro local: one declarative apply of the full desired state (no migration needed). CE/CI/CD: migrations apply -> objects replay. Production is reachable only inside GitHub Actions CD. |
 |
 | `.github/workflows/pr-validation.yml` | Per-PR checks (see the gates table below). Recreates the `pr-<n>` branch fresh off current production on every run. |
 | `.github/workflows/cd-promotion.yml` | On merge to main: DAB deploy + Atlas apply to production, serialized, never cancelled. |
@@ -122,7 +124,7 @@ when running on the community edition.
 | Cloud versioning | `migrate/push` → [Schema Registry](https://pragmatix.atlasgo.cloud/dirs/4294967296) | Git only (`atlas.sum`) |
 | Drift detection | object-aware `atlas schema diff` (one command, no probe branch) | probe-branch replay + definition compare + ghost check |
 | Rollback | `atlas migrate down` (`scripts/rollback_migration.sh`, Pro-gated) | recovery branch (pre-deploy PITR fork) or forward migration |
-| Objects (functions/views/triggers) | declarative: part of the desired state, planned by Atlas | layered replay + `retirements.jsonl` |
+| Objects (functions/views/triggers) | declarative: part of the desired state, planned by Atlas (local inner loop: one `atlas schema diff`-planned apply via `apply_desired.py`; platform event triggers filtered) | layered replay + `retirements.jsonl` |
 | Managed Schema Monitoring | Atlas Cloud product (connect the prod DB in the portal) | daily probe + `schema-drift` issue |
 | RBAC as code | not in either track | not in either track (backlog) |
 
@@ -211,15 +213,28 @@ finished green.
 
 ### The daily loop
 
+**Pro (local, default): test first, version last.** `./scripts/branch_test.sh`
+converges the dev branch to the FULL desired state (`db/schema` + `db/objects`)
+with one declarative apply — schema changes test WITHOUT generating a
+migration. Iterate freely; when green, run `./scripts/gen_migration.sh` once
+to freeze the versioned artifact, commit both files, open the PR.
+
 Three change shapes, each a PR:
 
-- **Schema change**: edit `db/schema/schema.sql`, run `./scripts/gen_migration.sh`,
+- **Schema change**: edit `db/schema/schema.sql`, test on the branch
+  (declarative, no migration needed), then run `./scripts/gen_migration.sh`,
   commit BOTH files, push, open a PR. CI verifies the migration matches the
   desired state; on drift it FAILS the check and comments the planned SQL
   (CI never commits).
-- **Object change**: edit the object's file under `db/objects/`. It replays
-  idempotently on the next deploy to any branch.
+- **Object change**: edit the object's file under `db/objects/`. Pro local
+  applies it declaratively; it replays idempotently on the next deploy to any
+  branch under CE.
 - **Both**: one `schema.sql` edit plus object files in the same PR.
+
+CI/CD always use the versioned path (migrate apply), never the declarative
+apply: the rehearsal must exercise the migration artifacts, and production is
+never drifted to desired state. Extensions used by code objects are declared
+in `db/schema/00_extensions.sql` so the declarative diff plans them.
 
 Working from a Databricks workspace: add the repo as a Git folder
 (workspace -> Add -> Git folder), edit SQL in the workspace editor, commit

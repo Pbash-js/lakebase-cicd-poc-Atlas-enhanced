@@ -76,20 +76,9 @@ DEV_URL="postgres://${ENCODED_USER}:${TOKEN}@${HOST}:5432/${SCRATCH}?sslmode=req
 # reported as DROPs). No probe branch, no replay, no def comparison.
 if [ "${ATLAS_EDITION:-ce}" = "pro" ]; then
   echo "▶ Pro drift check: object-aware schema diff (prod vs schema.sql + db/objects)"
-  # Layer order comes from apply_objects.py (single source of truth).
-  python - "$REPO" <<'PYEOF'
-import glob, sys, os
-sys.path.insert(0, os.path.join(sys.argv[1], "scripts"))
-from apply_objects import LAYER_ORDER
-repo = sys.argv[1]
-schema_files = sorted((repo / "db/schema").glob("*.sql"), key=lambda f: f.name != "schema.sql")
-parts = [f.read_text(encoding="utf-8") for f in schema_files]
-for layer in LAYER_ORDER:
-    for f in sorted(glob.glob(f"{repo}/db/objects/{layer}/*.sql")):
-        parts.append(open(f, encoding="utf-8").read())
-os.makedirs(f"{repo}/.tmp_pro", exist_ok=True)
-open(f"{repo}/.tmp_pro/desired.sql", "w", encoding="utf-8").write("\n\n".join(parts))
-PYEOF
+  # Desired state built by scripts/build_desired.py (single source of truth;
+  # same builder branch_test.sh uses for the declarative deploy).
+  python scripts/build_desired.py --out "$REPO/.tmp_pro/desired.sql" >/dev/null
   PRO_OUT="$("$ATLAS_BIN" schema diff \
     --from "$PROD_URL" \
     --to "file://${REPO}/.tmp_pro/desired.sql" \
