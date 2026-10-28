@@ -192,7 +192,7 @@ jobs:
           {
             echo "### Atlas plan check: db/schema/schema.sql drifted from db/migrations"
             echo ""
-            echo "Run `./scripts/gen_migration.sh` locally, commit the generated file, and push. Planned SQL:"
+            echo "Run \`./scripts/gen_migration.sh\` locally, commit the generated file, and push. Planned SQL:"
             echo ""
             echo '```sql'
             printf '%s\n'' "$OUT" | sed -n '/-- .*--/,$p' | head -200
