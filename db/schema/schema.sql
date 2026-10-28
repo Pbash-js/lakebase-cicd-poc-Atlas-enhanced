@@ -21,7 +21,8 @@ CREATE TABLE orders (
 );
 CREATE INDEX idx_orders_customer ON orders (customer_id);
 
-CREATE TABLE shipments (
+-- atlas:renamed_from shipments
+CREATE TABLE shipments_original (
     shipment_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     order_id    BIGINT NOT NULL REFERENCES orders(order_id),
     carrier     TEXT NOT NULL DEFAULT 'blue-dart',

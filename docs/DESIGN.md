@@ -96,6 +96,9 @@ CE runs whenever `ATLAS_EDITION=ce` (the runtime default until the Pro license l
 | Object drops / signature changes | `retirements.jsonl` manifest, dependents before dependees, no CASCADE | manual authorship |
 | Trigger edits skipped | `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` in every trigger file | none |
 | No lint | regex destructive gate in `pr-validation.yml`: `DROP TABLE`/`DROP SCHEMA`/`TRUNCATE` fail a PR without the `destructive-approved` label | regex, not parsing |
+| Day-zero gap: fresh clone has no migrations and no `.env.local` | `init_project.sh` is the single bootstrap: prompts + `.env.local`, auto-generates the initial baseline when `db/migrations` is empty, then runs the drift probe against production; `gen_migration.sh` / `branch_test.sh` invoke it on first run (skipped in CI, which always sets env vars) | one command to a verified-greenfield repo |
+| Migration-directory bloat (100+ files) | `scripts/make_baseline.sh` squashes to one `<ts>_baseline.sql` via Atlas-native `atlas migrate diff baseline` against the full desired state; refuses on drift; existing DBs are stamped with `atlas migrate apply --baseline <v>` (executes nothing) - production BEFORE merging, so CI's `pr-<n>` forks inherit the marking | git history is the archive; recover old migrations with `git revert` |
+
 | No drift detection | `scripts/check_drift.sh`: structural diff + probe-branch replay + definition compare + ghost check | daily schedule, not continuous |
 | Half-applied batches | `--tx-mode all` (migrations) and one outer transaction (objects) | migrations and objects remain two transactions |
 | Stale rehearsal | `pr-<n>` deleted and re-forked off current production every run | none |

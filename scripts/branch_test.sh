@@ -18,6 +18,11 @@ set -euo pipefail
 
 # one-time setup: scripts/init_project.sh writes .env.local (project + role)
 [ -f "$(dirname "$0")/../.env.local" ] && . "$(dirname "$0")/../.env.local"
+if [ -z "${LAKEBASE_PROJECT:-}" ] && [ ! -f "$(dirname "$0")/../.env.local" ]; then
+  echo "▶ first run - one-time setup:"
+  ./scripts/init_project.sh
+  . "$(dirname "$0")/../.env.local"
+fi
 
 INTERACTIVE=0
 if [ -t 0 ]; then INTERACTIVE=1; fi

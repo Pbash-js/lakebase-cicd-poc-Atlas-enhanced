@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drift probe: compares the LIVE production branch against Git (items the
 # CE pipeline otherwise cannot see).
-#   5a structural : atlas schema diff --from <prod> --to db/schema/schema.sql
+#   5a structural : atlas schema diff --from <prod> --to db/schema/ (dir)
 #                   (tables, columns, indexes, constraints, enums)
 #   5b objects    : fork production into a short-lived probe branch, replay
 #                   db/objects there, then compare pg_get_functiondef /
@@ -82,7 +82,8 @@ import glob, sys, os
 sys.path.insert(0, os.path.join(sys.argv[1], "scripts"))
 from apply_objects import LAYER_ORDER
 repo = sys.argv[1]
-parts = [open(f"{repo}/db/schema/schema.sql", encoding="utf-8").read()]
+schema_files = sorted((repo / "db/schema").glob("*.sql"), key=lambda f: f.name != "schema.sql")
+parts = [f.read_text(encoding="utf-8") for f in schema_files]
 for layer in LAYER_ORDER:
     for f in sorted(glob.glob(f"{repo}/db/objects/{layer}/*.sql")):
         parts.append(open(f, encoding="utf-8").read())
@@ -111,15 +112,28 @@ PYEOF
   exit 1
 fi
 
-echo "▶ 5a structural drift: prod vs db/schema/schema.sql"
-# -s public + excludes: tooling metadata (Lakebase __db_system, the Atlas
-# ledger schema, the legacy pre-Atlas schema_migrations table) is not app
-# schema and must not read as drift.
+DESIRED="$(mktemp -d)/desired.sql"
+{ cat "db/schema/schema.sql"; find db/schema -name '*.sql' ! -name 'schema.sql' -type f | LC_ALL=C sort | xargs -r cat; } > "$DESIRED"
+[ -s "$DESIRED" ] || { echo "✗ db/schema is empty" >&2; exit 2; }
+command -v cygpath >/dev/null 2>&1 && DESIRED=$(cygpath -m "$DESIRED")  # Windows: file:// URLs need native paths
+
+echo "▶ 5a structural drift: prod vs db/schema (all declared schemas)"
+# Schemas under management = public + every CREATE SCHEMA in db/schema/*.sql
+# (hard-coding public only hid every non-public schema from drift detection -
+# verified bug: a new table in new_shared_schema was invisible).
+# A schema used in db/schema but not declared there fails planning loudly.
+SCHEMA_ARGS=(--schema public)
+while read -r _s; do
+  [ -n "$_s" ] && [[ " ${SCHEMA_ARGS[*]} " != *" $_s "* ]] && SCHEMA_ARGS+=(--schema "$_s")
+done < <(grep -rhoiE 'CREATE[[:space:]]+SCHEMA[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?[a-z_]+' db/schema \
+  | awk '{print $NF}' | tr 'A-Z' 'a-z' | sort -u)
+# tooling metadata (Lakebase __db_system, Atlas ledger, infra, legacy
+# schema_migrations) is not app schema and must not read as drift.
 STRUCT_OUT="$("$ATLAS_BIN" schema diff \
   --from "$PROD_URL" \
-  --to "file://${REPO}/db/schema/schema.sql" \
+  --to "file://${DESIRED}" \
   --dev-url "$DEV_URL" \
-  --schema public \
+  "${SCHEMA_ARGS[@]}" \
   --exclude "public.schema_migrations" 2>&1)" || {
   echo "✗ atlas schema diff failed:"; printf '%s\n' "$STRUCT_OUT"; exit 2;
 }
@@ -166,7 +180,11 @@ python scripts/apply_objects.py \
   --host "$PROBE_HOST" --port 5432 --dbname databricks_postgres \
   --user "${DATABRICKS_PG_USER}" --password "$PROBE_TOKEN" \
   --sslmode require --objects-root db/objects >/dev/null || {
-  echo "✗ object replay on the probe branch failed (repo objects do not apply cleanly)" >&2; exit 2;
+  _orc=$?
+  if [ "$_orc" = 1 ]; then
+    echo "✗ object drift: db/objects does not apply cleanly on a prod fork (ghost/retirement output above)" >&2; exit 1
+  fi
+  echo "✗ object replay failed on the probe branch (infra error - see output above)" >&2; exit 2
 }
 
 PROBE_URL="postgres://${ENCODED_USER}:${PROBE_TOKEN}@${PROBE_HOST}:5432/databricks_postgres?sslmode=require"
