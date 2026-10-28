@@ -1,0 +1,4 @@
+- [ ] Quality of life changes, make  user login and env variable input as a dynamic terminal login flow (something like init_project.sh) 
+- [ ] Journey failure -> created a function -> deploy_db.sh -> changed function signature -> now both old and new functions exist
+- [ ] Changes to script names and readme updated - make it clearer - deploy_db -> branch_test, remove new_sandbox if not required 
+- [ ] Test a multi step flows similar to task 2 instead of 1 and done changes.  

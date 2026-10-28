@@ -25,7 +25,7 @@ SOURCE (Git)                DEPLOYMENT                                        DA
 db/schema/schema.sql   ->   PRO:   setup-atlas · migrate/lint · migrate/push  ->  pr-<n> rehearsal (fresh fork every run)
 db/objects/ (code SQL)        + migrate/apply (official action)                ->  production (on merge)
                               CE:    gen_migration.sh · apply_migrations_atlas  ->  drift-probe (daily monitor)
-                                     deploy_db.sh (CE entrypoint)                   recovery-<run_id> (pre-deploy PITR fork)
+                                     branch_test.sh (CE entrypoint)                   recovery-<run_id> (pre-deploy PITR fork)
 ```
 
 ## How to read this README / how to use this repo
@@ -65,7 +65,7 @@ branches and the production branch.
 ┌────────────────────────────────────────────┐
 │ 2. DEPLOYMENT ENGINE (DAB CLI + Atlas CE)  │
 │ databricks.yml: production branch/endpoint │
-│ deploy_db.sh: sandbox branches + SQL       │
+│ branch_test.sh: sandbox branches + SQL       │
 │ gen_migration.sh: plan · apply: the ledger │
 └─────────────────────┬──────────────────────┘
                       ▼
@@ -101,8 +101,8 @@ path (PR to `main`, then CD).
 | `scripts/apply_objects.py` | Replays `db/objects/` in layer order, and applies `retirements.jsonl` first. The WHOLE run is one transaction: objects applied before a failure roll back with it. |
 | `scripts/check_drift.sh` | Drift probe: structural diff (live branch vs `schema.sql`) + object comparison (live branch vs a repo replay on a probe branch). Exits 1 on drift, 2 on probe error. Pro mode (`ATLAS_EDITION=pro`): one object-aware `atlas schema diff` against `schema.sql + db/objects`, no probe branch needed |
 | `scripts/rollback_migration.sh` | Pro-only `atlas migrate down` wrapper: reverts the last N migrations with the migrations' pre-revert data checks enforced. Refuses production (restore the recovery branch instead). CE: not available, recovery branch or forward migration |
-| `scripts/deploy_db.sh` | Deploy entrypoint: mints a 1-hour OAuth credential, then Atlas validate -> apply -> objects -> tests. Production is reachable only inside GitHub Actions CD. |
-| `scripts/new_sandbox.sh` | One-command personal dev branch (7-day TTL). |
+| `scripts/branch_test.sh` | Deploy entrypoint: mints a 1-hour OAuth credential, then Atlas validate -> apply -> objects -> tests. Production is reachable only inside GitHub Actions CD. |
+|
 | `.github/workflows/pr-validation.yml` | Per-PR checks (see the gates table below). Recreates the `pr-<n>` branch fresh off current production on every run. |
 | `.github/workflows/cd-promotion.yml` | On merge to main: DAB deploy + Atlas apply to production, serialized, never cancelled. |
 | `.github/workflows/schema-drift-monitor.yml` | Daily scheduled drift probe; on drift it opens/updates a `schema-drift` issue and fails. |
@@ -170,7 +170,7 @@ literal path.
 ### Day one
 
 ```
-./scripts/deploy_db.sh    # interactive: creates dev-<you>-<yyyymmdd> off
+./scripts/branch_test.sh    # interactive: creates dev-<you>-<yyyymmdd> off
                           # production (7-day TTL), waits for the endpoint,
                           # applies migrations + objects, runs the tests
 ```

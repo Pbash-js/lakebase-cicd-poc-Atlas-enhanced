@@ -155,7 +155,7 @@ they are not app objects.
 
 ## Local development
 
-No SP involvement: `databricks auth login`, then `./scripts/deploy_db.sh`.
+No SP involvement: `databricks auth login`, then `./scripts/branch_test.sh`.
 The scripts mint a 1-hour database credential for the CALLER's identity, so
 local runs use your own role; CI runs use the SP's role.
 

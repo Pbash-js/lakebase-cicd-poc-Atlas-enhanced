@@ -213,4 +213,4 @@ jobs:
           TARGET_BRANCH: pr-${{ github.event.pull_request.number }}
           ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
           TEST_SUITE: all
-        run: ./scripts/deploy_db.sh
+        run: ./scripts/branch_test.sh

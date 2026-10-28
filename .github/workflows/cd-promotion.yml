@@ -143,7 +143,7 @@ jobs:
           TARGET_BRANCH: ${{ env.TARGET_BRANCH }}
           ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
           SKIP_MIGRATIONS: "1"
-        run: ./scripts/deploy_db.sh
+        run: ./scripts/branch_test.sh
 
       # CE track (fallback): our script — same ledger, --tx-mode all,
       # objects replay, tests, one entrypoint.
@@ -157,4 +157,4 @@ jobs:
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           TARGET_BRANCH: ${{ env.TARGET_BRANCH }}
           ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
-        run: ./scripts/deploy_db.sh
+        run: ./scripts/branch_test.sh

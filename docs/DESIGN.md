@@ -59,8 +59,7 @@ scripts/
 ├── apply_objects.py         object replay, one outer transaction
 ├── check_drift.sh           drift probe (per-edition strategy, section 7)
 ├── rollback_migration.sh    atlas migrate down wrapper (Pro-gated)
-├── new_sandbox.sh           one-command dev branch
-└── deploy_db.sh             single entrypoint: migrations -> objects -> tests
+└── branch_test.sh             single entrypoint: migrations -> objects -> tests
 .github/workflows/
 ├── pr-validation.yml        CI: gates + rehearsal on pr-<n>
 ├── cd-promotion.yml         CD: per-workspace promotion on main
@@ -118,7 +117,7 @@ CE runs whenever `ATLAS_EDITION=ce` (the runtime default until the Pro license l
 3. Recovery branch forked from production before any apply (PITR restore point).
 4. Atlas apply (official action under Pro; `apply_migrations_atlas.sh` under CE), then objects, then tests.
 
-**Guards:** `deploy_db.sh` refuses production outside GitHub Actions CD. The production branch of the Lakebase project is protected. The `production` GitHub environment carries required reviewers.
+**Guards:** `branch_test.sh` refuses production outside GitHub Actions CD. The production branch of the Lakebase project is protected. The `production` GitHub environment carries required reviewers.
 
 ## 7. Drift detection
 

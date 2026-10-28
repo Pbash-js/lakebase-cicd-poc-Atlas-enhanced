@@ -87,6 +87,52 @@ def ensure_ledger(conn) -> None:
     )
 
 
+def declared_objects(root: Path) -> set:
+    """Names of functions/procedures/views/triggers defined in db/objects."""
+    import re
+    declared = set()
+    for f in root.glob("*/*.sql"):
+        # strip comment lines: prose like "-- CREATE OR REPLACE VIEW is idempotent"
+        # must not read as a declaration
+        code = "\n".join(l for l in f.read_text(encoding="utf-8").splitlines() if not l.strip().startswith("--"))
+        for m in re.finditer(
+            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|VIEW)\s+(?:public\.)?([A-Za-z_][\w]*)",
+            code,
+        ):
+            declared.add(m.group(1).lower())
+    return declared
+
+
+def check_ghosts(conn, root: Path) -> int:
+    """Fail the deploy if the DB holds a code object declared nowhere.
+
+    This is the rename trap: a developer renames fn_old -> fn_new in the
+    object file, deploys, and BOTH now exist (CREATE OR REPLACE cannot drop).
+    The fix is a retirement line for the old name; this check forces it.
+    """
+    import re
+    declared = declared_objects(root)
+    ignored = set()
+    ig = root / "drift_ignore.jsonl"
+    if ig.is_file():
+        for raw in ig.read_text(encoding="utf-8").splitlines():
+            if raw.strip():
+                ignored.add(str(json.loads(raw)["object"]).strip().lower())
+    live = set()
+    for sql in (
+        "SELECT proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname='public'",
+        "SELECT viewname FROM pg_views WHERE schemaname='public'",
+    ):
+        live.update(r[0].lower() for r in conn.execute(sql).fetchall())
+    ghosts = live - declared - ignored
+    if not ghosts:
+        return 0
+    print("  ✗ ghost objects: live in public but declared nowhere in db/objects (renamed? add a retirement line, dependents first):", file=sys.stderr)
+    for g in sorted(ghosts):
+        print(f"      {g}: add {{\"stmt\": \"DROP <VIEW|FUNCTION|PROCEDURE> IF EXISTS {g};\", ...}} to db/objects/retirements.jsonl", file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", required=True)
@@ -155,7 +201,12 @@ def main() -> int:
         msg = str(e).strip()
         print(f"  object run aborted, transaction rolled back: {msg}", file=sys.stderr)
         return 1
-    return 0
+    # ghost check after commit: the rename trap (old object outlives its file)
+    with psycopg.connect(
+        host=args.host, port=args.port, dbname=args.dbname,
+        user=args.user, password=args.password, sslmode=args.sslmode,
+    ) as conn:
+        return check_ghosts(conn, root)
 
 
 if __name__ == "__main__":
