@@ -1,7 +1,7 @@
 name: PR Validation — Lakebase branch
 on:
   pull_request:
-    paths: ["db/migrations/**", "db/schema/**", "db/objects/**", "db/rbac/**", "db/tests/**", "scripts/**", "databricks.yml", ".github/workflows/**"]
+    paths: ["db/migrations/**", "db/schema/**", "db/objects/**", "db/tests/**", "scripts/**", "databricks.yml", ".github/workflows/**"]
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -9,6 +9,14 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
+      DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
+      ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
+      ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
+      ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
     services:
       # Official Atlas CI pattern (atlasgo.io/guides/ci-platforms/github-versioned):
       # a throwaway postgres container serves as the dev-database for lint
@@ -33,6 +41,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}   # commit on the PR branch, not the merge ref
           fetch-depth: 0
+
+      - name: Install Atlas CE (pinned)
+        uses: ./.github/actions/setup-atlas
 
       # Pro mode: official Atlas Cloud integration — installs Atlas with the
       # bot token (grant cached for offline access) and posts a native lint
@@ -117,60 +128,24 @@ jobs:
       - name: Install Python deps
         run: pip3 install "psycopg[binary]==3.2.9" "pytest==8.3.5"
 
-      - name: Recreate Ephemeral PR Branch (fresh fork of CURRENT production every run)
+      - name: Recreate ephemeral PR branch (fresh fork of CURRENT production every run)
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
-          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
           PR_ID: ${{ github.event.pull_request.number }}
         run: |
+          . scripts/lib.sh
           PR_BRANCH="pr-${PR_ID}"
-          BR_PATH="projects/${{ secrets.LAKEBASE_PROJECT }}/branches/${PR_BRANCH}"
+          BR_PATH="projects/${LAKEBASE_PROJECT}/branches/${PR_BRANCH}"
           echo "▶ recreating ${PR_BRANCH} off current production (24h TTL)"
-          databricks postgres delete-branch "$BR_PATH" 2>/dev/null || echo "  (no existing branch)"
-          for i in $(seq 1 15); do   # deletion is async; wait until it is gone
-            databricks postgres get-branch "$BR_PATH" --output json >/dev/null 2>&1 || break
-            [ "$i" = 15 ] && { echo "::error::old ${PR_BRANCH} did not delete in time"; exit 1; }
-            sleep 2
-          done
-          databricks postgres create-branch "projects/${{ secrets.LAKEBASE_PROJECT }}" "$PR_BRANCH" \
-            --json '{"spec":{"source_branch":"projects/${{ secrets.LAKEBASE_PROJECT }}/branches/production","ttl":"86400s"}}'
-
-      - name: Wait for Endpoint Readiness
-        env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
-          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
-          PR_ID: ${{ github.event.pull_request.number }}
-        run: |
-          PR_BRANCH="pr-${PR_ID}"
-          for i in $(seq 1 30); do
-            STATE=$(databricks postgres get-endpoint \
-              "projects/${{ secrets.LAKEBASE_PROJECT }}/branches/$PR_BRANCH/endpoints/primary" \
-              --output json | jq -r '.status.current_state // empty')
-            # ACTIVE = ready; IDLE = suspended (scale-to-zero), wakes on first connection
-            [ "$STATE" = "ACTIVE" -o "$STATE" = "IDLE" ] && exit 0
-            sleep 2
-          done
-          echo "Endpoint did not become ready" && exit 1
+          lb_wait_branch_gone "$BR_PATH" || { echo "::error::old ${PR_BRANCH} did not delete in time"; exit 1; }
+          lb_create_branch "$LAKEBASE_PROJECT" "$PR_BRANCH" production 86400
+          # ACTIVE = ready; IDLE = suspended (scale-to-zero), wakes on first connection
+          lb_wait_endpoint "${BR_PATH}/endpoints/primary" || { echo "::error::endpoint did not become ready"; exit 1; }
 
       - name: Atlas plan check (desired state vs migrations — FAIL on drift; CI never commits)
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
-          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
-          LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
-          DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           PR_ID: ${{ github.event.pull_request.number }}
-          ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
           GH_TOKEN: ${{ github.token }}
         run: |
-          curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-v1.3.5
-          echo "bfc65a52d3b745178c619a314052580861a385c364ae5abece174286055d525a  /tmp/atlas" | sha256sum -c -   # supply-chain: pinned v1.3.5 checksum
-          chmod +x /tmp/atlas
           set +e
           OUT=$(./scripts/gen_migration.sh --check 2>&1)
           RC=$?
@@ -192,10 +167,10 @@ jobs:
           {
             echo "### Atlas plan check: db/schema/schema.sql drifted from db/migrations"
             echo ""
-            echo "Run `./scripts/gen_migration.sh` locally, commit the generated file, and push. Planned SQL:"
+            echo "Run \`./scripts/gen_migration.sh\` locally, commit the generated file, and push. Planned SQL:"
             echo ""
             echo '```sql'
-            printf '%s\n'' "$OUT" | sed -n '/-- .*--/,$p' | head -200
+            printf '%s\n' "$OUT" | sed -n '/-- .*--/,$p' | head -200
             echo '```'
           } > plan.md
           gh pr comment ${{ github.event.pull_request.number }} --body-file plan.md || true
@@ -204,13 +179,6 @@ jobs:
 
       - name: Run Migrations (Atlas apply — exactly-once)
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
-          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
-          LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
-          DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           TARGET_BRANCH: pr-${{ github.event.pull_request.number }}
-          ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
           TEST_SUITE: all
-        run: ./scripts/deploy_db.sh
+        run: ./scripts/branch_test.sh

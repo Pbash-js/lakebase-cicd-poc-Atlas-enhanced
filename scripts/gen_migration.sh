@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Wraps Atlas Community Edition `atlas migrate diff` against a scratch
 # database inside the target Lakebase branch. Desired state is a single
-# declarative SQL file: db/schema/schema.sql. Atlas plans; Atlas-native
+# declarative SQL: db/schema/ (schema.sql is the base file; every other
+# *.sql in the dir is appended after it, sorted - cross-file FKs must point at
+# objects defined earlier). Atlas plans; Atlas-native
 # apply (scripts/apply_migrations_atlas.sh) applies. Atlas never writes
 # to the application schema, and the live database is never diffed.
 #
@@ -22,6 +24,7 @@
 # (CI: DATABRICKS_HOST + DATABRICKS_TOKEN; local: auth login).
 # LAKEBASE_PROJECT is required (prompted interactively, hard-failed in CI).
 set -euo pipefail
+. "$(dirname "$0")/lib.sh"
 
 NAME="atlas_generated"
 CHECK=0
@@ -31,6 +34,16 @@ for a in "$@"; do
     *) NAME="$a" ;;
   esac
 done
+
+
+# Desired state = db/schema/*.sql in a fixed order: schema.sql first (the
+# base), then the rest sorted. A single hard-coded schema.sql would silently
+# ignore every other file in db/schema (verified bug: AMSShared.sql invisible).
+build_desired() {
+  _out="$1"
+  { cat "db/schema/schema.sql"; find db/schema -name '*.sql' ! -name 'schema.sql' -type f | LC_ALL=C sort | xargs -r cat; } > "$_out"
+  [ -s "$_out" ] || { echo "✗ db/schema is empty" >&2; exit 2; }
+}
 
 INTERACTIVE=0
 [ -t 0 ] && INTERACTIVE=1
@@ -45,6 +58,12 @@ else
   BRANCH="${_TB:-$_DEFAULT}"
 fi
 
+[ -f ".env.local" ] && . ".env.local"
+if [ -z "${LAKEBASE_PROJECT:-}" ] && [ ! -f ".env.local" ]; then
+  echo "▶ first run - one-time setup:"
+  ./scripts/init_project.sh
+  . ".env.local"
+fi
 if [ -z "${LAKEBASE_PROJECT:-}" ]; then
   if [ "$INTERACTIVE" = 1 ]; then
     read -r -p "Lakebase project id: " LAKEBASE_PROJECT
@@ -56,8 +75,8 @@ if [ -z "${DATABRICKS_PG_USER:-}" ] && [ "$INTERACTIVE" = 1 ]; then
 fi
 
 ATLAS_BIN="${ATLAS_BIN:-atlas}"
-command -v "$ATLAS_BIN" >/dev/null 2>&1 || { echo "✗ atlas CLI not found (set ATLAS_BIN)"; exit 1; }
-command -v python >/dev/null 2>&1 || { echo "✗ python not found"; exit 1; }
+command -v "$ATLAS_BIN" >/dev/null 2>&1 || { echo "✗ atlas CLI not found (set ATLAS_BIN)"; exit 2; }
+command -v python >/dev/null 2>&1 || { echo "✗ python not found"; exit 2; }
 
 ENDPOINT="projects/${LAKEBASE_PROJECT}/branches/${BRANCH}/endpoints/primary"
 
@@ -66,19 +85,15 @@ if [ -n "${TARGET_BRANCH:-}" ] || [ -n "${PR_ID:-}" ]; then
   : # CI provisions its own branches
 elif ! databricks postgres get-branch "projects/${LAKEBASE_PROJECT}/branches/${BRANCH}" -o json >/dev/null 2>&1; then
   echo "▶ creating dev branch ${BRANCH} off production (1-day TTL)"
-  databricks postgres create-branch "projects/${LAKEBASE_PROJECT}" "${BRANCH}" \
-    --json "{\"spec\":{\"source_branch\":\"projects/${LAKEBASE_PROJECT}/branches/production\",\"ttl\":\"86400s\"}}" >/dev/null
+  lb_create_branch "$LAKEBASE_PROJECT" "$BRANCH" production 86400
 fi
 
 echo "▶ atlas plan: branch=${BRANCH} project=${LAKEBASE_PROJECT}"
 
-HOST="$(databricks postgres get-endpoint "$ENDPOINT" --output json \
-  | python -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")"
-TOKEN="$(databricks postgres generate-database-credential "$ENDPOINT" --output json \
-  | python -c "import sys,json;print(json.load(sys.stdin)['token'])")"
+HOST="$(lb_host "$ENDPOINT")"
+TOKEN="$(lb_token "$ENDPOINT")"
 
 SCRATCH="atlas_dev_$$"
-DEV_URL="postgres://$(python -c "import urllib.parse;print(urllib.parse.quote('${DATABRICKS_PG_USER:?}', safe=''))"):${TOKEN}@${HOST}:5432/${SCRATCH}?sslmode=require"
 APP_URL="postgres://$(python -c "import urllib.parse;print(urllib.parse.quote('${DATABRICKS_PG_USER}', safe=''))"):${TOKEN}@${HOST}:5432/databricks_postgres?sslmode=require"
 
 cleanup() {
@@ -109,25 +124,31 @@ if command -v cygpath >/dev/null 2>&1; then REPO=$(cygpath -m "$(pwd)"); else RE
 if [ "$CHECK" = 1 ]; then
   # Plan into a throwaway copy: a NEW file means the committed migrations
   # do not converge to the desired state — fail the PR.
-  TMPD="$(mktemp -d)"
-  cp db/migrations/*.sql db/migrations/atlas.sum "$TMPD"/ 2>/dev/null || true
-  if command -v cygpath >/dev/null 2>&1; then TMPD=$(cygpath -m "$TMPD"); fi
+  # desired.sql must NOT sit in the migrations copy dir: atlas.sum would read
+  # it as a foreign file ("checksum mismatch").
+  TMPD="$(mktemp -d)"; MIG="$TMPD/mig"; mkdir "$MIG"
+  DESIRED="$TMPD/desired.sql"
+  build_desired "$DESIRED"                      # bash writes via the MSYS path
+  cp db/migrations/*.sql db/migrations/atlas.sum "$MIG"/ 2>/dev/null || true
+  if command -v cygpath >/dev/null 2>&1; then   # Atlas needs native paths in URLs
+    TMPD=$(cygpath -m "$TMPD"); MIG=$(cygpath -m "$MIG"); DESIRED=$(cygpath -m "$DESIRED")
+  fi
   "$ATLAS_BIN" migrate diff "$NAME" \
-    --dir "file://${TMPD}" \
-    --to "file://${REPO}/db/schema/schema.sql" \
+    --dir "file://${MIG}" \
+    --to "file://${DESIRED}" \
     --dev-url "$DEV_URL" >/dev/null \
   || { echo "::error::plan check failed on an Atlas/infra error (not drift) - see log above"; exit 2; }
   BASE=$(ls db/migrations | grep -v atlas.sum | sort | tail -1)
-  NEW=$(ls "$TMPD" | grep -v atlas.sum | sort | tail -1)
-  if grep -qiE 'DROP (VIEW|FUNCTION|PROCEDURE|TRIGGER) ' "$TMPD/$NEW"; then
+  NEW=$(ls "$MIG" | grep -v atlas.sum | sort | tail -1)
+  if grep -qiE 'DROP (VIEW|FUNCTION|PROCEDURE|TRIGGER) ' "$MIG/$NEW"; then
   echo "::error::plan wants to drop code objects - objects deploy via the replay (db/objects), never via migrations. The scratch dev DB was polluted or objects are missing from the desired state; do NOT commit this plan. See README Object changes."
-  cat "$TMPD/$NEW"
+  cat "$MIG/$NEW"
   exit 2
   fi
   if [ "$NEW" != "$BASE" ]; then
     echo "::error::desired state (db/schema) drifted from db/migrations — CI never commits: run gen_migration.sh locally and commit both files"
     echo "--- Atlas would generate: ---"
-    cat "$TMPD/$NEW"
+    cat "$MIG/$NEW"
     exit 1
   fi
   echo "✓ plan check clean: db/migrations matches db/schema"
@@ -143,9 +164,13 @@ if [ "$CHECK" = 1 ]; then
     echo "✓ lint clean"
   fi
 else
+  TMPD="$(mktemp -d)"
+  DESIRED="$TMPD/desired.sql"
+  build_desired "$DESIRED"
+  if command -v cygpath >/dev/null 2>&1; then DESIRED=$(cygpath -m "$DESIRED"); fi
   "$ATLAS_BIN" migrate diff "$NAME" \
     --dir "file://${REPO}/db/migrations" \
-    --to "file://${REPO}/db/schema/schema.sql" \
+    --to "file://${DESIRED}" \
     --dev-url "$DEV_URL"
   # Normalize to LF and re-hash: atlas.sum must match the git BLOBS, not a
   # Windows CRLF working tree (autocrlf checkouts would break CI verification).

@@ -59,14 +59,12 @@ scripts/
 ├── apply_objects.py         object replay, one outer transaction
 ├── check_drift.sh           drift probe (per-edition strategy, section 7)
 ├── rollback_migration.sh    atlas migrate down wrapper (Pro-gated)
-├── new_sandbox.sh           one-command dev branch
-└── deploy_db.sh             single entrypoint: migrations -> objects -> tests
+└── branch_test.sh             single entrypoint: migrations -> objects -> tests
 .github/workflows/
 ├── pr-validation.yml        CI: gates + rehearsal on pr-<n>
 ├── cd-promotion.yml         CD: per-workspace promotion on main
 ├── schema-drift-monitor.yml scheduled drift probe + issue alerting
-└── cleanup-orphans.yml      ephemeral-branch GC
-databricks.yml               bundle: four targets; branches + endpoints only
+databricks.yml               bundle: prod target (dev/qa/stage trimmed until workspaces exist)
 docs/IDENTITIES.md           SP identities, subject strings, credential patterns
 ```
 
@@ -93,9 +91,13 @@ CE runs whenever `ATLAS_EDITION=ce` (the runtime default until the Pro license l
 | CE gap | Closure in this repo | Residual limit |
 | --- | --- | --- |
 | Objects unsupported | `db/objects/` replayed by `apply_objects.py` in layer order, one outer transaction | layer ordering is convention, not a dependency graph |
+| Object renames | post-replay ghost check: live-but-undeclared objects fail the deploy; interactive (local TTY) runs can append the retirement lines in one confirmation and re-run; CI/CD hard-fails with the lines |
 | Object drops / signature changes | `retirements.jsonl` manifest, dependents before dependees, no CASCADE | manual authorship |
 | Trigger edits skipped | `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` in every trigger file | none |
 | No lint | regex destructive gate in `pr-validation.yml`: `DROP TABLE`/`DROP SCHEMA`/`TRUNCATE` fail a PR without the `destructive-approved` label | regex, not parsing |
+| Day-zero gap: fresh clone has no migrations and no `.env.local` | `init_project.sh` is the single bootstrap: prompts + `.env.local`, auto-generates the initial baseline when `db/migrations` is empty, then runs the drift probe against production; `gen_migration.sh` / `branch_test.sh` invoke it on first run (skipped in CI, which always sets env vars) | one command to a verified-greenfield repo |
+| Migration-directory bloat (100+ files) | `scripts/make_baseline.sh` squashes to one `<ts>_baseline.sql` via Atlas-native `atlas migrate diff baseline` against the full desired state; refuses on drift; existing DBs are stamped with `atlas migrate apply --baseline <v>` (executes nothing) - production BEFORE merging, so CI's `pr-<n>` forks inherit the marking | git history is the archive; recover old migrations with `git revert` |
+
 | No drift detection | `scripts/check_drift.sh`: structural diff + probe-branch replay + definition compare + ghost check | daily schedule, not continuous |
 | Half-applied batches | `--tx-mode all` (migrations) and one outer transaction (objects) | migrations and objects remain two transactions |
 | Stale rehearsal | `pr-<n>` deleted and re-forked off current production every run | none |
@@ -118,7 +120,7 @@ CE runs whenever `ATLAS_EDITION=ce` (the runtime default until the Pro license l
 3. Recovery branch forked from production before any apply (PITR restore point).
 4. Atlas apply (official action under Pro; `apply_migrations_atlas.sh` under CE), then objects, then tests.
 
-**Guards:** `deploy_db.sh` refuses production outside GitHub Actions CD. The production branch of the Lakebase project is protected. The `production` GitHub environment carries required reviewers.
+**Guards:** `branch_test.sh` refuses production outside GitHub Actions CD. The production branch of the Lakebase project is protected. The `production` GitHub environment carries required reviewers.
 
 ## 7. Drift detection
 

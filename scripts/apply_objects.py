@@ -87,6 +87,71 @@ def ensure_ledger(conn) -> None:
     )
 
 
+def declared_objects(root: Path) -> set:
+    """Names of functions/procedures/views/triggers defined in db/objects."""
+    import re
+    declared = set()
+    for f in root.glob("**/*.sql"):
+        # strip comment lines: prose like "-- CREATE OR REPLACE VIEW is idempotent"
+        # must not read as a declaration
+        code = "\n".join(l for l in f.read_text(encoding="utf-8").splitlines() if not l.strip().startswith("--"))
+        for m in re.finditer(
+            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|VIEW|TRIGGER)\s+(?:public\.)?([A-Za-z_][\w]*)",
+            code,
+        ):
+            declared.add(m.group(1).lower())
+    return declared
+
+
+def check_ghosts(conn, root: Path) -> int:
+    """Fail the deploy if the DB holds a code object declared nowhere.
+
+    This is the rename trap: a developer renames fn_old -> fn_new in the
+    object file, deploys, and BOTH now exist (CREATE OR REPLACE cannot drop).
+    The fix is a retirement line for the old name; this check forces it.
+    """
+    import re
+    declared = declared_objects(root)
+    ignored = set()
+    ig = root / "drift_ignore.jsonl"
+    if ig.is_file():
+        for raw in ig.read_text(encoding="utf-8").splitlines():
+            if raw.strip():
+                ignored.add(str(json.loads(raw)["object"]).strip().lower())
+    live = {}
+    for sql in (
+        "SELECT proname, CASE prokind WHEN 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname='public'",
+        "SELECT viewname, 'VIEW' FROM pg_views WHERE schemaname='public'",
+    ):
+        for r in conn.execute(sql).fetchall():
+            live[r[0].lower()] = r[1]
+    order = {"VIEW": 0, "FUNCTION": 1, "PROCEDURE": 2}  # dependents before dependees
+    ghosts = sorted(set(live) - declared - ignored, key=lambda g: order[live[g]])
+    if not ghosts:
+        return 0
+    print("  ✗ ghost objects: live in public but declared nowhere in db/objects (renamed? add a retirement line, dependents first):", file=sys.stderr)
+    for g in ghosts:
+        print(f"      {g} ({live[g].lower()}): add {{\"stmt\": \"DROP {live[g]} IF EXISTS {g};\", ...}} to db/objects/retirements.jsonl", file=sys.stderr)
+    if sys.stdin.isatty():
+        # Local journey: offer to retire the ghosts in one confirmation, then
+        # the caller re-runs. CI/CD (non-TTY) never prompts: it hard-fails.
+        try:
+            ans = input(f"  Add DROP statements for these {len(ghosts)} object(s) to {root / 'retirements.jsonl'} and re-run? [y/N] ")
+        except EOFError:
+            ans = ""
+        if ans.strip().lower() == "y":
+            with open(root / "retirements.jsonl", "a", encoding="utf-8") as f:
+                for g in ghosts:
+                    f.write(json.dumps({
+                        "stmt": f"DROP {live[g]} IF EXISTS {g};",
+                        "reason": "resolved interactively at deploy time (ghost check)",
+                        "requested_in": "interactive",
+                    }) + "\n")
+            print(f"  ✓ appended {len(ghosts)} retirement line(s); re-running deploy", file=sys.stderr)
+            return 3  # caller re-runs
+    return 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", required=True)
@@ -155,7 +220,12 @@ def main() -> int:
         msg = str(e).strip()
         print(f"  object run aborted, transaction rolled back: {msg}", file=sys.stderr)
         return 1
-    return 0
+    # ghost check after commit: the rename trap (old object outlives its file)
+    with psycopg.connect(
+        host=args.host, port=args.port, dbname=args.dbname,
+        user=args.user, password=args.password, sslmode=args.sslmode,
+    ) as conn:
+        return check_ghosts(conn, root)
 
 
 if __name__ == "__main__":

@@ -65,7 +65,7 @@ Identity map (client id → role):
 
 | SP | Application (client) ID | Runs in | Purpose |
 | --- | --- | --- | --- |
-| SP-CI | `eacad5b0-694c-4cf8-b56f-63ec17b92f95` | `pr-validation.yml`, `cleanup-orphans.yml` | Per-PR rehearsal on `pr-<n>` branches; ephemeral branch lifecycle (GC) |
+| SP-CI | `eacad5b0-694c-4cf8-b56f-63ec17b92f95` | `pr-validation.yml` | Per-PR rehearsal on `pr-<n>` branches |
 | SP-CD | `fc3eb1ed-dbfc-4785-b712-c030294f153f` | `cd-promotion.yml` (environment `production`) | Deploys to production: DAB + migrations + objects + smoke tests |
 | SP-MONITOR | `53648115-4f50-40f3-8372-4e11002cc180` | `schema-drift-monitor.yml` | Daily drift probe: read production, replay objects on a probe branch |
 
@@ -155,7 +155,7 @@ they are not app objects.
 
 ## Local development
 
-No SP involvement: `databricks auth login`, then `./scripts/deploy_db.sh`.
+No SP involvement: `databricks auth login`, then `./scripts/branch_test.sh`.
 The scripts mint a 1-hour database credential for the CALLER's identity, so
 local runs use your own role; CI runs use the SP's role.
 

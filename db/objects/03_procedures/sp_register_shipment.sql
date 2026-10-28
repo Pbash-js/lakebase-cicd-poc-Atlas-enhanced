@@ -8,7 +8,7 @@ BEGIN
     IF v_customer IS NULL THEN
         RAISE EXCEPTION 'order % not found', p_order_id;
     END IF;
-    INSERT INTO shipments (order_id, carrier, status, shipped_at)
+    INSERT INTO shipments_original (order_id, carrier, status, shipped_at)
     VALUES (p_order_id, p_carrier, 'in-transit', now());
     UPDATE orders SET status = 'shipped' WHERE order_id = p_order_id;
 END $$;

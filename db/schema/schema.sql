@@ -17,15 +17,19 @@ CREATE TABLE orders (
     total_cents BIGINT NOT NULL DEFAULT 0,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     note        TEXT NOT NULL DEFAULT '',
-    tag         TEXT NOT NULL DEFAULT ''
+    tag         TEXT NOT NULL DEFAULT '',
+    currency    TEXT NOT NULL DEFAULT 'INR'
 );
 CREATE INDEX idx_orders_customer ON orders (customer_id);
 
-CREATE TABLE shipments (
+-- atlas:renamed_from shipments
+CREATE TABLE shipments_original (
     shipment_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     order_id    BIGINT NOT NULL REFERENCES orders(order_id),
     carrier     TEXT NOT NULL DEFAULT 'blue-dart',
     status      TEXT NOT NULL DEFAULT 'pending',
     shipped_at  TIMESTAMPTZ,
-    priority    INTEGER NOT NULL DEFAULT 5
+    priority    INTEGER NOT NULL DEFAULT 3
 );
+CREATE UNIQUE INDEX idx_customers_name ON customers (name);
+CREATE INDEX idx_shipments_order ON shipments_original (order_id);

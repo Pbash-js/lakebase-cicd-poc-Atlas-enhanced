@@ -1,4 +1,4 @@
-h1:dIz3j1Vj6bjZYBnvxywMFko4gzJ1XNgt5aSCA/tKxgk=
+h1:oKLMw3MwbfEG5HR6WyLvMjJBTIIAQr8UQPUELArVWzQ=
 001_init_schema.sql h1:j82hHqtab4FXTsmjE6/EXV139OJeSUeuEnnWf9QMTig=
 002_seed_and_index.sql h1:mEeVPSG/bnJPXV1woLZOXIBiiPzFgdNJNX3CATX8sf4=
 003_add_note_column.sql h1:212FKADqt5mObZdAH5Zlys3s2OTOKbJbU/7AglTl+RM=
@@ -7,3 +7,4 @@ h1:dIz3j1Vj6bjZYBnvxywMFko4gzJ1XNgt5aSCA/tKxgk=
 20261006152349_add_customers_region.sql h1:LWoHOciKnEPcR2ttsxX/ainRSWojADvS+COG6+pPpzE=
 20261007071942_add_shipments_priority.sql h1:dIi8oKeI4Wlv3tNV+gvto8Ak/I56tIxX3vhxKJB+dDY=
 20261007112525_atlas_planned.sql h1:aNeQoaCimHvawvW9E9tSYoHOlMNuTffG/Se+jxnOPTc=
+20261028113349_demo_changes.sql h1:ttLbY/0g/t7UARWEycXWhD9D94IiWTAefb5H8c6i0Gs=

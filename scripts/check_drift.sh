@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drift probe: compares the LIVE production branch against Git (items the
 # CE pipeline otherwise cannot see).
-#   5a structural : atlas schema diff --from <prod> --to db/schema/schema.sql
+#   5a structural : atlas schema diff --from <prod> --to db/schema/ (dir)
 #                   (tables, columns, indexes, constraints, enums)
 #   5b objects    : fork production into a short-lived probe branch, replay
 #                   db/objects there, then compare pg_get_functiondef /
@@ -16,6 +16,8 @@ set -euo pipefail
 # exit 2 ("probe error"), never 1 ("drift"): the monitor workflow branches on
 # the exit code and a wrong code files a false drift issue every day.
 trap 'echo "✗ probe error (see report above)" >&2; exit 2' ERR
+
+. "$(dirname "$0")/lib.sh"
 
 : "${LAKEBASE_PROJECT:?set LAKEBASE_PROJECT (the Lakebase project id)}"
 : "${DATABRICKS_PG_USER:?set DATABRICKS_PG_USER (the Lakebase Postgres role)}"
@@ -38,10 +40,8 @@ PROD_EP="projects/${LAKEBASE_PROJECT}/branches/${SOURCE_BRANCH}/endpoints/primar
 PROBE_PATH="projects/${LAKEBASE_PROJECT}/branches/${PROBE_BRANCH}"
 PROBE_EP="${PROBE_PATH}/endpoints/primary"
 
-HOST="$(databricks postgres get-endpoint "$PROD_EP" --output json \
-  | python -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")"
-TOKEN="$(databricks postgres generate-database-credential "$PROD_EP" --output json \
-  | python -c "import sys,json;print(json.load(sys.stdin)['token'])")"
+HOST="$(lb_host "$PROD_EP")"
+TOKEN="$(lb_token "$PROD_EP")"
 echo "::add-mask::${TOKEN}"   # never leak the runtime credential in logs
 ENCODED_USER="$(python -c "import urllib.parse;print(urllib.parse.quote('${DATABRICKS_PG_USER}', safe=''))")"
 PROD_URL="postgres://${ENCODED_USER}:${TOKEN}@${HOST}:5432/databricks_postgres?sslmode=require"
@@ -82,7 +82,8 @@ import glob, sys, os
 sys.path.insert(0, os.path.join(sys.argv[1], "scripts"))
 from apply_objects import LAYER_ORDER
 repo = sys.argv[1]
-parts = [open(f"{repo}/db/schema/schema.sql", encoding="utf-8").read()]
+schema_files = sorted((repo / "db/schema").glob("*.sql"), key=lambda f: f.name != "schema.sql")
+parts = [f.read_text(encoding="utf-8") for f in schema_files]
 for layer in LAYER_ORDER:
     for f in sorted(glob.glob(f"{repo}/db/objects/{layer}/*.sql")):
         parts.append(open(f, encoding="utf-8").read())
@@ -111,15 +112,28 @@ PYEOF
   exit 1
 fi
 
-echo "▶ 5a structural drift: prod vs db/schema/schema.sql"
-# -s public + excludes: tooling metadata (Lakebase __db_system, the Atlas
-# ledger schema, the legacy pre-Atlas schema_migrations table) is not app
-# schema and must not read as drift.
+DESIRED="$(mktemp -d)/desired.sql"
+{ cat "db/schema/schema.sql"; find db/schema -name '*.sql' ! -name 'schema.sql' -type f | LC_ALL=C sort | xargs -r cat; } > "$DESIRED"
+[ -s "$DESIRED" ] || { echo "✗ db/schema is empty" >&2; exit 2; }
+command -v cygpath >/dev/null 2>&1 && DESIRED=$(cygpath -m "$DESIRED")  # Windows: file:// URLs need native paths
+
+echo "▶ 5a structural drift: prod vs db/schema (all declared schemas)"
+# Schemas under management = public + every CREATE SCHEMA in db/schema/*.sql
+# (hard-coding public only hid every non-public schema from drift detection -
+# verified bug: a new table in new_shared_schema was invisible).
+# A schema used in db/schema but not declared there fails planning loudly.
+SCHEMA_ARGS=(--schema public)
+while read -r _s; do
+  [ -n "$_s" ] && [[ " ${SCHEMA_ARGS[*]} " != *" $_s "* ]] && SCHEMA_ARGS+=(--schema "$_s")
+done < <(grep -rhoiE 'CREATE[[:space:]]+SCHEMA[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?[a-z_]+' db/schema \
+  | awk '{print $NF}' | tr 'A-Z' 'a-z' | sort -u)
+# tooling metadata (Lakebase __db_system, Atlas ledger, infra, legacy
+# schema_migrations) is not app schema and must not read as drift.
 STRUCT_OUT="$("$ATLAS_BIN" schema diff \
   --from "$PROD_URL" \
-  --to "file://${REPO}/db/schema/schema.sql" \
+  --to "file://${DESIRED}" \
   --dev-url "$DEV_URL" \
-  --schema public \
+  "${SCHEMA_ARGS[@]}" \
   --exclude "public.schema_migrations" 2>&1)" || {
   echo "✗ atlas schema diff failed:"; printf '%s\n' "$STRUCT_OUT"; exit 2;
 }
@@ -142,31 +156,22 @@ fi
 # --- 5b: object drift (probe branch + def comparison) ------------------------
 echo "▶ 5b object drift: prod vs db/objects replay"
 databricks postgres delete-branch "$PROBE_PATH" >/dev/null 2>&1 || true
-for i in $(seq 1 15); do   # deletion is async; wait until it is gone
-  databricks postgres get-branch "$PROBE_PATH" -o json >/dev/null 2>&1 || break
-  [ "$i" = 15 ] && { echo "✗ stale ${PROBE_BRANCH} did not delete in time" >&2; exit 2; }
-  sleep 2
-done
-databricks postgres create-branch "projects/${LAKEBASE_PROJECT}" "$PROBE_BRANCH" \
-  --json "{\"spec\":{\"source_branch\":\"projects/${LAKEBASE_PROJECT}/branches/${SOURCE_BRANCH}\",\"ttl\":\"86400s\"}}" >/dev/null
-for i in $(seq 1 30); do
-  STATE="$(databricks postgres get-endpoint "$PROBE_EP" -o json \
-    | python -c "import sys,json;print(json.load(sys.stdin)['status']['current_state'])" 2>/dev/null || true)"
-  [ "$STATE" = "ACTIVE" -o "$STATE" = "IDLE" ] && break
-  [ "$i" = 30 ] && { echo "✗ probe endpoint not ready" >&2; exit 2; }
-  sleep 2
-done
-PROBE_HOST="$(databricks postgres get-endpoint "$PROBE_EP" --output json \
-  | python -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")"
-PROBE_TOKEN="$(databricks postgres generate-database-credential "$PROBE_EP" --output json \
-  | python -c "import sys,json;print(json.load(sys.stdin)['token'])")"
+lb_wait_branch_gone "$PROBE_PATH" || { echo "✗ stale ${PROBE_BRANCH} did not delete in time" >&2; exit 2; }
+lb_create_branch "$LAKEBASE_PROJECT" "$PROBE_BRANCH" "$SOURCE_BRANCH" 86400
+lb_wait_endpoint "$PROBE_EP" || { echo "✗ probe endpoint not ready" >&2; exit 2; }
+PROBE_HOST="$(lb_host "$PROBE_EP")"
+PROBE_TOKEN="$(lb_token "$PROBE_EP")"
 echo "::add-mask::${PROBE_TOKEN}"
 
 python scripts/apply_objects.py \
   --host "$PROBE_HOST" --port 5432 --dbname databricks_postgres \
   --user "${DATABRICKS_PG_USER}" --password "$PROBE_TOKEN" \
   --sslmode require --objects-root db/objects >/dev/null || {
-  echo "✗ object replay on the probe branch failed (repo objects do not apply cleanly)" >&2; exit 2;
+  _orc=$?
+  if [ "$_orc" = 1 ]; then
+    echo "✗ object drift: db/objects does not apply cleanly on a prod fork (ghost/retirement output above)" >&2; exit 1
+  fi
+  echo "✗ object replay failed on the probe branch (infra error - see output above)" >&2; exit 2
 }
 
 PROBE_URL="postgres://${ENCODED_USER}:${PROBE_TOKEN}@${PROBE_HOST}:5432/databricks_postgres?sslmode=require"
@@ -209,15 +214,12 @@ def dump(url):
     names = {(k, n.lower()) for k, d, n in rows if d}
     return lines, names
 
-# Names the repo declares anywhere under db/objects/
-repo = Path(sys.argv[3])
-declared = set()
-for f in repo.glob("db/objects/**/*.sql"):
-    for m in re.finditer(
-        r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|VIEW|TRIGGER)\s+(?:public\.)?([A-Za-z_][\w]*)",
-        f.read_text(encoding="utf-8"),
-    ):
-        declared.add(m.group(1).lower())
+# Names the repo declares anywhere under db/objects/ — one source of truth:
+# apply_objects.declared_objects (same regex the deploy-time ghost check uses).
+import sys as _sys
+_sys.path.insert(0, str(Path(sys.argv[3]) / "scripts"))
+from apply_objects import declared_objects
+declared = declared_objects(Path(sys.argv[3]) / "db" / "objects")
 
 # Reviewed ignore list: names on production that are managed outside
 # db/objects (e.g. legacy rbac helpers) and must not read as ghosts.

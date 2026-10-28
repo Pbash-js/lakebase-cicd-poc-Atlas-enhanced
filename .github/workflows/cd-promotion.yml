@@ -2,7 +2,7 @@ name: CD Promotion — replay to production
 on:
   push:
     branches: [main]
-    paths: ["db/migrations/**", "db/schema/**", "db/objects/**", "db/rbac/**", "databricks.yml", ".github/workflows/**"]
+    paths: ["db/migrations/**", "db/schema/**", "db/objects/**", "databricks.yml", ".github/workflows/**"]
   workflow_dispatch:
     inputs:
       target_branch:
@@ -63,12 +63,9 @@ jobs:
         run: databricks bundle deploy -t prod
 
       - name: Install Atlas CE (pinned)
-        run: |
-          curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-v1.3.5
-          echo "bfc65a52d3b745178c619a314052580861a385c364ae5abece174286055d525a  /tmp/atlas" | sha256sum -c -   # supply-chain: pinned v1.3.5 checksum
-          chmod +x /tmp/atlas
+        uses: ./.github/actions/setup-atlas
 
-      # Pro mode: push the migration directory to the Atlas Cloud Schema
+      # Pro mode: push the migration dir to the Atlas Cloud Schema
       # Registry (official CI guide step 2) so every deploy is versioned in
       # the cloud. Skipped under CE.
       - name: Push migration dir to Atlas Cloud registry (Pro only)
@@ -92,12 +89,13 @@ jobs:
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
         run: |
+          . scripts/lib.sh
           EP="projects/${LAKEBASE_PROJECT}/branches/${TARGET_BRANCH}/endpoints/primary"
-          HOST=$(databricks postgres get-endpoint "$EP" -o json | python3 -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")
-          TOK=$(databricks postgres generate-database-credential "$EP" -o json | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+          HOST=$(lb_host "$EP")
+          TOK=$(lb_token "$EP")
           echo "::add-mask::${TOK}"
           ENC=$(python3 -c "import urllib.parse;print(urllib.parse.quote('${{ secrets.DATABRICKS_PG_USER }}', safe=''))")
-          echo "url=postgres://${ENC}:${TOK}@${HOST}:5432/databricks_postgres?sslmode=require" >> "$GITHUB_OUTPUT"
+          echo "url=postgres://${ENC}:***@${HOST}:5432/databricks_postgres?sslmode=require" >> "$GITHUB_OUTPUT"
 
       - name: Pre-deploy recovery branch (PITR fork of production)
         if: env.TARGET_BRANCH == 'production'
@@ -108,17 +106,12 @@ jobs:
           ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
           LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
         run: |
+          . scripts/lib.sh
           RB="recovery-${{ github.run_id }}"
-          BR_PATH="projects/${{ secrets.LAKEBASE_PROJECT }}/branches/${RB}"
+          BR_PATH="projects/${LAKEBASE_PROJECT}/branches/${RB}"
           echo "▶ creating ${RB} off production (24h TTL) — rollback point for this deploy"
-          databricks postgres delete-branch "$BR_PATH" 2>/dev/null || true
-          for i in $(seq 1 15); do
-            databricks postgres get-branch "$BR_PATH" --output json >/dev/null 2>&1 || break
-            [ "$i" = 15 ] && { echo "::error::stale ${RB} did not delete in time"; exit 1; }
-            sleep 2
-          done
-          databricks postgres create-branch "projects/${{ secrets.LAKEBASE_PROJECT }}" "$RB" \
-            --json '{"spec":{"source_branch":"projects/${{ secrets.LAKEBASE_PROJECT }}/branches/production","ttl":"86400s"}}'
+          lb_wait_branch_gone "$BR_PATH" || { echo "::error::stale ${RB} did not delete in time"; exit 1; }
+          lb_create_branch "$LAKEBASE_PROJECT" "$RB" production 86400
           echo "recovery_branch=${RB}" >> "$GITHUB_OUTPUT"
         id: recovery
 
@@ -143,7 +136,7 @@ jobs:
           TARGET_BRANCH: ${{ env.TARGET_BRANCH }}
           ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
           SKIP_MIGRATIONS: "1"
-        run: ./scripts/deploy_db.sh
+        run: ./scripts/branch_test.sh
 
       # CE track (fallback): our script — same ledger, --tx-mode all,
       # objects replay, tests, one entrypoint.
@@ -157,4 +150,4 @@ jobs:
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           TARGET_BRANCH: ${{ env.TARGET_BRANCH }}
           ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
-        run: ./scripts/deploy_db.sh
+        run: ./scripts/branch_test.sh
