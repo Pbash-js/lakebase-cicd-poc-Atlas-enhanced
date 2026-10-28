@@ -119,9 +119,12 @@ def check_ghosts(conn, root: Path) -> int:
             if raw.strip():
                 ignored.add(str(json.loads(raw)["object"]).strip().lower())
     live = {}
+    # deptype='e' filter: objects owned by extensions (e.g. pgcrypto's
+    # crypt/pgp_* land in public) are never ghosts — same rule the drift
+    # probe's 5b comparison applies.
     for sql in (
-        "SELECT proname, CASE prokind WHEN 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname='public'",
-        "SELECT viewname, 'VIEW' FROM pg_views WHERE schemaname='public'",
+        "SELECT proname, CASE prokind WHEN 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname='public' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')",
+        "SELECT c.relname, 'VIEW' FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind = 'v' AND n.nspname='public' AND NOT EXISTS (SELECT 1 FROM pg_rewrite r JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass WHERE r.ev_class = c.oid AND d.deptype = 'e')",
     ):
         for r in conn.execute(sql).fetchall():
             live[r[0].lower()] = r[1]
