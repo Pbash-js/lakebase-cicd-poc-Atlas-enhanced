@@ -37,7 +37,7 @@ lb_wait_branch_gone() { # $1=branch path; deletes it and waits out the async del
   done
 }
 
-lb_create_branch() { # $1=project $2=branch $3=source_branch $4=ttl_seconds
+lb_create_branch() { # $1=project $2=branch $3=source_branch $4=ttl_seconds (s suffix appended: the CLI rejects a bare number)
   databricks postgres create-branch "projects/$1" "$2" \
-    --json "{\"spec\":{\"source_branch\":\"projects/$1/branches/$3\",\"ttl\":\"$4\"}}" >/dev/null
+    --json "{\"spec\":{\"source_branch\":\"projects/$1/branches/$3\",\"ttl\":\"$4s\"}}" >/dev/null
 }

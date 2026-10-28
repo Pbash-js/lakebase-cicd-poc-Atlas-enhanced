@@ -8,7 +8,7 @@ BEGIN
     RETURN NEW;
 END $$;
 
-DROP TRIGGER IF EXISTS trg_shipments_audit ON shipments;
+DROP TRIGGER IF EXISTS trg_shipments_audit ON shipments_original;
 CREATE TRIGGER trg_shipments_audit
-AFTER INSERT OR UPDATE ON shipments
+AFTER INSERT OR UPDATE ON shipments_original
 FOR EACH ROW EXECUTE FUNCTION trg_shipments_audit_fn();
