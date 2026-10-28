@@ -41,3 +41,13 @@ lb_create_branch() { # $1=project $2=branch $3=source_branch $4=ttl_seconds (s s
   databricks postgres create-branch "projects/$1" "$2" \
     --json "{\"spec\":{\"source_branch\":\"projects/$1/branches/$3\",\"ttl\":\"$4s\"}}" >/dev/null
 }
+
+lb_schema_args() { # prints "--schema <s>" args: public + every CREATE SCHEMA in db/schema.
+  # Allowlist for Atlas diff/apply: anything else live (e.g. Lakebase's
+  # __db_system, the Atlas ledger schema) is not ours and must not be managed.
+  echo "--schema public"
+  grep -rhoiE 'CREATE[[:space:]]+SCHEMA[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?[a-z_]+' db/schema \
+    | awk '{print $NF}' | tr 'A-Z' 'a-z' | sort -u | while read -r s; do
+      [ "$s" != "public" ] && echo "--schema $s"
+    done
+}
