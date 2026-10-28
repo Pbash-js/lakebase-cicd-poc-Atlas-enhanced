@@ -220,6 +220,7 @@ import sys as _sys
 _sys.path.insert(0, str(Path(sys.argv[3]) / "scripts"))
 from apply_objects import declared_objects
 declared = declared_objects(Path(sys.argv[3]) / "db" / "objects")
+repo = Path(sys.argv[3])
 
 # Reviewed ignore list: names on production that are managed outside
 # db/objects (e.g. legacy rbac helpers) and must not read as ghosts.
