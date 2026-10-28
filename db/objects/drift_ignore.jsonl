@@ -1,0 +1,3 @@
+{"object": "grant_all_on_new_sequences", "reason": "legacy rbac helper from the pre-Atlas accelerator deploys; production only; this repo does not ship apply_rbac.py"}
+{"object": "grant_select_on_new_objects", "reason": "legacy rbac helper from the pre-Atlas accelerator deploys; production only; this repo does not ship apply_rbac.py"}
+{"object": "grant_usage_on_new_schema", "reason": "legacy rbac helper from the pre-Atlas accelerator deploys; production only; this repo does not ship apply_rbac.py"}

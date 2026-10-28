@@ -115,9 +115,15 @@ if [ "$CHECK" = 1 ]; then
   "$ATLAS_BIN" migrate diff "$NAME" \
     --dir "file://${TMPD}" \
     --to "file://${REPO}/db/schema/schema.sql" \
-    --dev-url "$DEV_URL" >/dev/null
+    --dev-url "$DEV_URL" >/dev/null \
+  || { echo "::error::plan check failed on an Atlas/infra error (not drift) - see log above"; exit 2; }
   BASE=$(ls db/migrations | grep -v atlas.sum | sort | tail -1)
   NEW=$(ls "$TMPD" | grep -v atlas.sum | sort | tail -1)
+  if grep -qiE 'DROP (VIEW|FUNCTION|PROCEDURE|TRIGGER) ' "$TMPD/$NEW"; then
+  echo "::error::plan wants to drop code objects - objects deploy via the replay (db/objects), never via migrations. The scratch dev DB was polluted or objects are missing from the desired state; do NOT commit this plan. See README Object changes."
+  cat "$TMPD/$NEW"
+  exit 2
+  fi
   if [ "$NEW" != "$BASE" ]; then
     echo "::error::desired state (db/schema) drifted from db/migrations — CI never commits: run gen_migration.sh locally and commit both files"
     echo "--- Atlas would generate: ---"
@@ -132,7 +138,8 @@ if [ "$CHECK" = 1 ]; then
     echo "▶ atlas lint (Pro): analyzing the latest migrations"
     "$ATLAS_BIN" migrate lint --latest 1 \
       --dir "file://${REPO}/db/migrations" \
-      --dev-url "$DEV_URL"
+      --dev-url "$DEV_URL" \
+    || { echo "::error::atlas lint failed on an infra error (not drift) - see log above"; exit 2; }
     echo "✓ lint clean"
   fi
 else
@@ -144,6 +151,16 @@ else
   # Windows CRLF working tree (autocrlf checkouts would break CI verification).
   find db/migrations -name '*.sql' -exec sed -i 's/\r$//' {} +
   "$ATLAS_BIN" migrate hash --dir "file://${REPO}/db/migrations"
-  echo "✓ generated: $(ls db/migrations | grep -v atlas.sum | sort | tail -1)"
+  NEWEST="$(ls db/migrations | grep -v atlas.sum | sort | tail -1)"
+  if grep -qiE 'DROP (VIEW|FUNCTION|PROCEDURE|TRIGGER) ' "db/migrations/$NEWEST"; then
+    echo "✗ generated plan drops code objects - objects deploy via the replay (db/objects), never via migrations (see README Object changes)."
+    echo "  The scratch dev DB was polluted or objects are missing from the desired state. NOT staging anything."
+    git checkout -- db/migrations/atlas.sum 2>/dev/null || true
+    rm -f "db/migrations/$NEWEST"
+    exit 2
+  fi
+  # auto-stage so a generated migration can never be left untracked
+  git add db/migrations
+  echo "✓ generated (staged): $NEWEST"
   echo "  commit it with the schema edit: git add db && git commit"
 fi

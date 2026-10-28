@@ -23,11 +23,17 @@ set -euo pipefail
 HOST="${1:?host}"; PGUSER="${2:?user}"; TOKEN="${3:?token}"
 
 cd "$(dirname "$0")/.."
-if command -v cygpath >/dev/null 2>&1; then REPO=$(cygpath -m "$(pwd)"); else REPO=$(pwd); fi
-
 ATLAS_BIN="${ATLAS_BIN:-atlas}"
-DIR="file://${REPO}/${ATLAS_MIGRATIONS_DIR:-db/migrations}"
+# repo-relative dir: file://X:/... (Windows drive letter) silently resolves to an
+# empty dir in Atlas, turning apply into a no-op (verified 2026-10-27). The script cds to the repo root,
+# so a relative path is correct on every OS.
+DIR="file://${ATLAS_MIGRATIONS_DIR:-db/migrations}"
 ENCODED_USER="$(python -c "import urllib.parse;print(urllib.parse.quote('${PGUSER}', safe=''))")"
+
+# Guard: the dir must contain migration files. An unresolvable path must fail
+# loudly, never degrade into a silent no-op apply.
+ls "${ATLAS_MIGRATIONS_DIR:-db/migrations}"/*.sql >/dev/null 2>&1 \
+  || { echo "✗ no migration files found at ${ATLAS_MIGRATIONS_DIR:-db/migrations} (path bug?)"; exit 2; }
 
 # Out-of-band integrity check before touching the target: the migration dir
 # must be internally consistent (atlas.sum matches the files, no rebase or
@@ -35,6 +41,8 @@ ENCODED_USER="$(python -c "import urllib.parse;print(urllib.parse.quote('${PGUSE
 echo "▶ atlas validate (dir integrity)"
 "$ATLAS_BIN" migrate validate --dir "$DIR" \
   || { echo "✗ migration directory failed validation (tampered or rebased history)"; exit 1; }
+# the real token MUST be in the URL (lib/pq ignores PGPASSWORD); Atlas redacts
+# the password in any error output it prints
 URL="postgres://${ENCODED_USER}:${TOKEN}@${HOST}:5432/databricks_postgres?sslmode=require"
 
 if [ -n "${ATLAS_BASELINE:-}" ]; then

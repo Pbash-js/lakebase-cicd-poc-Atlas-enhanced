@@ -156,7 +156,7 @@ jobs:
           done
           echo "Endpoint did not become ready" && exit 1
 
-      - name: Atlas CE Plan (desired state vs migrations — FAIL on drift; CI never commits)
+      - name: Atlas plan check (desired state vs migrations — FAIL on drift; CI never commits)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
@@ -171,27 +171,38 @@ jobs:
           curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-v1.3.5
           echo "bfc65a52d3b745178c619a314052580861a385c364ae5abece174286055d525a  /tmp/atlas" | sha256sum -c -   # supply-chain: pinned v1.3.5 checksum
           chmod +x /tmp/atlas
-          if OUT=$(./scripts/gen_migration.sh --check 2>&1); then
+          set +e
+          OUT=$(./scripts/gen_migration.sh --check 2>&1)
+          RC=$?
+          set -e
+          echo "$OUT"
+          if [ "$RC" -eq 0 ]; then
             echo "✓ db/schema/schema.sql matches db/migrations"
             exit 0
           fi
-          # Drift: FAIL the check. CI never commits: the dev runs
+          if [ "$RC" -ne 1 ]; then
+            # Infra error (endpoint capacity, connectivity, lint failure) - NOT
+            # schema drift. Never comment: a naive dev must not be told to
+            # commit a spurious migration (verified failure mode, PR #10).
+            echo "::error::plan check failed on an infra error (exit $RC) - retry the run; do NOT generate migrations for this"
+            exit "$RC"
+          fi
+          # Drift (exit 1): FAIL the check. CI never commits: the dev runs
           # ./scripts/gen_migration.sh locally and commits the generated file.
-          echo "$OUT"
           {
-            echo "### Atlas CE plan check: db/schema/schema.sql drifted from db/migrations"
+            echo "### Atlas plan check: db/schema/schema.sql drifted from db/migrations"
             echo ""
-            echo "Run \`./scripts/gen_migration.sh\` locally, commit the generated file, and push. Planned SQL:"
+            echo "Run `./scripts/gen_migration.sh` locally, commit the generated file, and push. Planned SQL:"
             echo ""
             echo '```sql'
-            printf '%s\n' "$OUT" | sed -n '/-- .*--/,$p' | head -200
+            printf '%s\n'' "$OUT" | sed -n '/-- .*--/,$p' | head -200
             echo '```'
           } > plan.md
           gh pr comment ${{ github.event.pull_request.number }} --body-file plan.md || true
-          echo "::error::plan drift: schema.sql is not covered by db/migrations — generate locally and commit (see the PR comment)"
+          echo "::error::plan drift: schema.sql is not covered by db/migrations - generate locally and commit (see the PR comment)"
           exit 1
 
-      - name: Run Migrations (Atlas CE apply — exactly-once)
+      - name: Run Migrations (Atlas apply — exactly-once)
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
