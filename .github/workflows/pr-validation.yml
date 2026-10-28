@@ -58,7 +58,7 @@ jobs:
         uses: ariga/atlas-action/migrate/lint@v1
         with:
           dir: 'file://db/migrations'
-          dev-url: 'postgres://postgres:***@localhost:5432/dev?search_path=public&sslmode=disable'
+          dev-url: 'postgres://postgres:pass@localhost:5432/dev?search_path=public&sslmode=disable'
           dir-name: 'lakebase-cicd-poc'
         env:
           GITHUB_TOKEN: ${{ github.token }}
