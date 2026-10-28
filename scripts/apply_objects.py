@@ -96,7 +96,7 @@ def declared_objects(root: Path) -> set:
         # must not read as a declaration
         code = "\n".join(l for l in f.read_text(encoding="utf-8").splitlines() if not l.strip().startswith("--"))
         for m in re.finditer(
-            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|VIEW|TRIGGER)\s+(?:public\.)?([A-Za-z_][\w]*)",
+            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|VIEW|TRIGGER)\s+(?:[A-Za-z_][\w]*\.)?([A-Za-z_][\w]*)",
             code,
         ):
             declared.add(m.group(1).lower())
@@ -177,7 +177,9 @@ def main() -> int:
     for layer in LAYER_ORDER:
         d = root / layer
         if d.is_dir():
-            files += sorted(d.glob("*.sql"))
+            # recursive: nested folders (e.g. 03_procedures/Authz/) are
+            # organizational grouping; the SQL itself names the target schema
+            files += sorted(p for p in d.glob("**/*.sql") if p.is_file())
 
     retirements = load_retirements(root)
 
@@ -191,14 +193,18 @@ def main() -> int:
             conn.execute("SET LOCAL lock_timeout = '5s'")
             ensure_ledger(conn)
             if retirements:
-                print(f"  retirements ({len(retirements)} statement(s)):")
+                # Quiet by design: a consumed retirement re-prints its DROP on
+                # every later deploy, which reads like the object keeps being
+                # dropped. Only actual executions print; consumed entries
+                # collapse into one summary line.
+                executed = skipped = 0
                 for entry in retirements:
                     stmt, h = entry["stmt"], stmt_hash(entry["stmt"])
                     row = conn.execute(
                         "SELECT 1 FROM infra.retirements_applied WHERE stmt_hash = %s", (h,)
                     ).fetchone()
                     if row:
-                        print(f"  {'(already applied) ' + entry['stmt']:<58} SKIPPED")
+                        skipped += 1
                         continue
                     head = stmt if len(stmt) <= 60 else stmt[:57] + "..."
                     conn.execute(stmt)
@@ -207,6 +213,8 @@ def main() -> int:
                         (h, stmt, entry["reason"], entry["requested_in"]),
                     )
                     print(f"    {head:<58} RETIRED")
+                    executed += 1
+                print(f"  retirements: {executed} executed, {skipped} already consumed (no-op)")
             for path in files:
                 sql = path.read_text(encoding="utf-8")
                 label = str(path.relative_to(root))

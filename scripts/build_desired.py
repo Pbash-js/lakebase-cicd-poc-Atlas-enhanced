@@ -20,7 +20,7 @@ def build(repo: Path) -> str:
         sys.exit("✗ db/schema is empty")
     parts += [f.read_text(encoding="utf-8") for f in schema_files]
     for layer in LAYER_ORDER:
-        for f in sorted(glob.glob(str(repo / "db/objects" / layer / "*.sql"))):
+        for f in sorted((repo / "db/objects" / layer).rglob("*.sql")):
             parts.append(Path(f).read_text(encoding="utf-8"))
     return "\n\n".join(parts)
 
