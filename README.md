@@ -106,7 +106,6 @@ path (PR to `main`, then CD).
 | `.github/workflows/pr-validation.yml` | Per-PR checks (see the gates table below). Recreates the `pr-<n>` branch fresh off current production on every run. |
 | `.github/workflows/cd-promotion.yml` | On merge to main: DAB deploy + Atlas apply to production, serialized, never cancelled. |
 | `.github/workflows/schema-drift-monitor.yml` | Daily scheduled drift probe; on drift it opens/updates a `schema-drift` issue and fails. |
-| `.github/workflows/cleanup-orphans.yml` | GC for leftover ephemeral branches. |
 
 ## Engine ownership: what Atlas Pro runs, what stays repo code (CE fallback)
 
@@ -464,9 +463,9 @@ Source: [atlasgo.io/guides/ci-platforms/github-versioned](https://atlasgo.io/gui
 Closed since this section was written: production test split (smoke vs
 integration), CI fail-on-drift (no auto-commit), explicit baseline,
 three-dot merge-base diffs, pre-deploy recovery branch in CD, pinned Atlas
-version, credential masking, bundle targets for Dev/QA/Stage/Prod
-(dev/qa/stage are placeholder stubs until the workspaces exist; prod is
-live), SP designations + Lakebase roles + app_pipeline ownership grants
+version, credential masking, bundle targets trimmed to prod (dev/qa/stage
+stub targets removed; re-add when those workspaces exist), SP designations +
+Lakebase roles + app_pipeline ownership grants
 (docs/IDENTITIES.md).
 Decisions taken: GC stays weekly-only, dev-branch TTL stays 7 days,
 ownership review skipped for the POC.

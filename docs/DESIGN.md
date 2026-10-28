@@ -64,8 +64,7 @@ scripts/
 ├── pr-validation.yml        CI: gates + rehearsal on pr-<n>
 ├── cd-promotion.yml         CD: per-workspace promotion on main
 ├── schema-drift-monitor.yml scheduled drift probe + issue alerting
-└── cleanup-orphans.yml      ephemeral-branch GC
-databricks.yml               bundle: four targets; branches + endpoints only
+databricks.yml               bundle: prod target (dev/qa/stage trimmed until workspaces exist)
 docs/IDENTITIES.md           SP identities, subject strings, credential patterns
 ```
 

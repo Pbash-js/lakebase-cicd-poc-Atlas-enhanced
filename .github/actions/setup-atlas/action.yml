@@ -1,0 +1,10 @@
+name: 'Install Atlas CE (pinned)'
+description: 'Downloads pinned Atlas CE v1.3.5 to /tmp/atlas with a supply-chain checksum.'
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        curl -sSfL -o /tmp/atlas https://atlasbinaries.com/atlas/atlas-community-linux-amd64-v1.3.5
+        echo "bfc65a52d3b745178c619a314052580861a385c364ae5abece174286055d525a  /tmp/atlas" | sha256sum -c -   # supply-chain: pinned v1.3.5 checksum
+        chmod +x /tmp/atlas

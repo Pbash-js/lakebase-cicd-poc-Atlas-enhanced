@@ -24,6 +24,7 @@
 # (CI: DATABRICKS_HOST + DATABRICKS_TOKEN; local: auth login).
 # LAKEBASE_PROJECT is required (prompted interactively, hard-failed in CI).
 set -euo pipefail
+. "$(dirname "$0")/lib.sh"
 
 NAME="atlas_generated"
 CHECK=0
@@ -74,8 +75,8 @@ if [ -z "${DATABRICKS_PG_USER:-}" ] && [ "$INTERACTIVE" = 1 ]; then
 fi
 
 ATLAS_BIN="${ATLAS_BIN:-atlas}"
-command -v "$ATLAS_BIN" >/dev/null 2>&1 || { echo "✗ atlas CLI not found (set ATLAS_BIN)"; exit 1; }
-command -v python >/dev/null 2>&1 || { echo "✗ python not found"; exit 1; }
+command -v "$ATLAS_BIN" >/dev/null 2>&1 || { echo "✗ atlas CLI not found (set ATLAS_BIN)"; exit 2; }
+command -v python >/dev/null 2>&1 || { echo "✗ python not found"; exit 2; }
 
 ENDPOINT="projects/${LAKEBASE_PROJECT}/branches/${BRANCH}/endpoints/primary"
 
@@ -84,19 +85,15 @@ if [ -n "${TARGET_BRANCH:-}" ] || [ -n "${PR_ID:-}" ]; then
   : # CI provisions its own branches
 elif ! databricks postgres get-branch "projects/${LAKEBASE_PROJECT}/branches/${BRANCH}" -o json >/dev/null 2>&1; then
   echo "▶ creating dev branch ${BRANCH} off production (1-day TTL)"
-  databricks postgres create-branch "projects/${LAKEBASE_PROJECT}" "${BRANCH}" \
-    --json "{\"spec\":{\"source_branch\":\"projects/${LAKEBASE_PROJECT}/branches/production\",\"ttl\":\"86400s\"}}" >/dev/null
+  lb_create_branch "$LAKEBASE_PROJECT" "$BRANCH" production 86400
 fi
 
 echo "▶ atlas plan: branch=${BRANCH} project=${LAKEBASE_PROJECT}"
 
-HOST="$(databricks postgres get-endpoint "$ENDPOINT" --output json \
-  | python -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")"
-TOKEN="$(databricks postgres generate-database-credential "$ENDPOINT" --output json \
-  | python -c "import sys,json;print(json.load(sys.stdin)['token'])")"
+HOST="$(lb_host "$ENDPOINT")"
+TOKEN="$(lb_token "$ENDPOINT")"
 
 SCRATCH="atlas_dev_$$"
-DEV_URL="postgres://$(python -c "import urllib.parse;print(urllib.parse.quote('${DATABRICKS_PG_USER:?}', safe=''))"):${TOKEN}@${HOST}:5432/${SCRATCH}?sslmode=require"
 APP_URL="postgres://$(python -c "import urllib.parse;print(urllib.parse.quote('${DATABRICKS_PG_USER}', safe=''))"):${TOKEN}@${HOST}:5432/databricks_postgres?sslmode=require"
 
 cleanup() {

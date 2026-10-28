@@ -91,12 +91,12 @@ def declared_objects(root: Path) -> set:
     """Names of functions/procedures/views/triggers defined in db/objects."""
     import re
     declared = set()
-    for f in root.glob("*/*.sql"):
+    for f in root.glob("**/*.sql"):
         # strip comment lines: prose like "-- CREATE OR REPLACE VIEW is idempotent"
         # must not read as a declaration
         code = "\n".join(l for l in f.read_text(encoding="utf-8").splitlines() if not l.strip().startswith("--"))
         for m in re.finditer(
-            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|VIEW)\s+(?:public\.)?([A-Za-z_][\w]*)",
+            r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|VIEW|TRIGGER)\s+(?:public\.)?([A-Za-z_][\w]*)",
             code,
         ):
             declared.add(m.group(1).lower())

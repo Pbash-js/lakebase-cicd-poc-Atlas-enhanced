@@ -11,6 +11,7 @@
 # Usage: TARGET_BRANCH=<branch> rollback_migration.sh [amount]   (default 1)
 # Requires an authenticated databricks CLI and ATLAS_EDITION=pro.
 set -euo pipefail
+. "$(dirname "$0")/lib.sh"
 
 : "${LAKEBASE_PROJECT:?set LAKEBASE_PROJECT}"
 : "${DATABRICKS_PG_USER:?set DATABRICKS_PG_USER}"
@@ -34,8 +35,8 @@ cd "$(dirname "$0")/.."
 if command -v cygpath >/dev/null 2>&1; then REPO=$(cygpath -m "$(pwd)"); else REPO=$(pwd); fi
 
 EP="projects/${LAKEBASE_PROJECT}/branches/${TARGET_BRANCH}/endpoints/primary"
-HOST="$(databricks postgres get-endpoint "$EP" -o json | python -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")"
-TOKEN="$(databricks postgres generate-database-credential "$EP" -o json | python -c "import sys,json;print(json.load(sys.stdin)['token'])")"
+HOST="$(lb_host "$EP")"
+TOKEN="$(lb_token "$EP")"
 echo "::add-mask::${TOKEN}"
 ENCODED_USER="$(python -c "import urllib.parse;print(urllib.parse.quote('${DATABRICKS_PG_USER}', safe=''))")"
 URL="postgres://${ENCODED_USER}:${TOKEN}@${HOST}:5432/databricks_postgres?sslmode=require"

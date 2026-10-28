@@ -17,6 +17,8 @@ set -euo pipefail
 # the exit code and a wrong code files a false drift issue every day.
 trap 'echo "✗ probe error (see report above)" >&2; exit 2' ERR
 
+. "$(dirname "$0")/lib.sh"
+
 : "${LAKEBASE_PROJECT:?set LAKEBASE_PROJECT (the Lakebase project id)}"
 : "${DATABRICKS_PG_USER:?set DATABRICKS_PG_USER (the Lakebase Postgres role)}"
 SOURCE_BRANCH="${SOURCE_BRANCH:-production}"   # the branch treated as "live"
@@ -38,10 +40,8 @@ PROD_EP="projects/${LAKEBASE_PROJECT}/branches/${SOURCE_BRANCH}/endpoints/primar
 PROBE_PATH="projects/${LAKEBASE_PROJECT}/branches/${PROBE_BRANCH}"
 PROBE_EP="${PROBE_PATH}/endpoints/primary"
 
-HOST="$(databricks postgres get-endpoint "$PROD_EP" --output json \
-  | python -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")"
-TOKEN="$(databricks postgres generate-database-credential "$PROD_EP" --output json \
-  | python -c "import sys,json;print(json.load(sys.stdin)['token'])")"
+HOST="$(lb_host "$PROD_EP")"
+TOKEN="$(lb_token "$PROD_EP")"
 echo "::add-mask::${TOKEN}"   # never leak the runtime credential in logs
 ENCODED_USER="$(python -c "import urllib.parse;print(urllib.parse.quote('${DATABRICKS_PG_USER}', safe=''))")"
 PROD_URL="postgres://${ENCODED_USER}:${TOKEN}@${HOST}:5432/databricks_postgres?sslmode=require"
@@ -156,24 +156,11 @@ fi
 # --- 5b: object drift (probe branch + def comparison) ------------------------
 echo "▶ 5b object drift: prod vs db/objects replay"
 databricks postgres delete-branch "$PROBE_PATH" >/dev/null 2>&1 || true
-for i in $(seq 1 15); do   # deletion is async; wait until it is gone
-  databricks postgres get-branch "$PROBE_PATH" -o json >/dev/null 2>&1 || break
-  [ "$i" = 15 ] && { echo "✗ stale ${PROBE_BRANCH} did not delete in time" >&2; exit 2; }
-  sleep 2
-done
-databricks postgres create-branch "projects/${LAKEBASE_PROJECT}" "$PROBE_BRANCH" \
-  --json "{\"spec\":{\"source_branch\":\"projects/${LAKEBASE_PROJECT}/branches/${SOURCE_BRANCH}\",\"ttl\":\"86400s\"}}" >/dev/null
-for i in $(seq 1 30); do
-  STATE="$(databricks postgres get-endpoint "$PROBE_EP" -o json \
-    | python -c "import sys,json;print(json.load(sys.stdin)['status']['current_state'])" 2>/dev/null || true)"
-  [ "$STATE" = "ACTIVE" -o "$STATE" = "IDLE" ] && break
-  [ "$i" = 30 ] && { echo "✗ probe endpoint not ready" >&2; exit 2; }
-  sleep 2
-done
-PROBE_HOST="$(databricks postgres get-endpoint "$PROBE_EP" --output json \
-  | python -c "import sys,json;print(json.load(sys.stdin)['status']['hosts']['host'])")"
-PROBE_TOKEN="$(databricks postgres generate-database-credential "$PROBE_EP" --output json \
-  | python -c "import sys,json;print(json.load(sys.stdin)['token'])")"
+lb_wait_branch_gone "$PROBE_PATH" || { echo "✗ stale ${PROBE_BRANCH} did not delete in time" >&2; exit 2; }
+lb_create_branch "$LAKEBASE_PROJECT" "$PROBE_BRANCH" "$SOURCE_BRANCH" 86400
+lb_wait_endpoint "$PROBE_EP" || { echo "✗ probe endpoint not ready" >&2; exit 2; }
+PROBE_HOST="$(lb_host "$PROBE_EP")"
+PROBE_TOKEN="$(lb_token "$PROBE_EP")"
 echo "::add-mask::${PROBE_TOKEN}"
 
 python scripts/apply_objects.py \
@@ -227,15 +214,12 @@ def dump(url):
     names = {(k, n.lower()) for k, d, n in rows if d}
     return lines, names
 
-# Names the repo declares anywhere under db/objects/
-repo = Path(sys.argv[3])
-declared = set()
-for f in repo.glob("db/objects/**/*.sql"):
-    for m in re.finditer(
-        r"(?is)CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|VIEW|TRIGGER)\s+(?:public\.)?([A-Za-z_][\w]*)",
-        f.read_text(encoding="utf-8"),
-    ):
-        declared.add(m.group(1).lower())
+# Names the repo declares anywhere under db/objects/ — one source of truth:
+# apply_objects.declared_objects (same regex the deploy-time ghost check uses).
+import sys as _sys
+_sys.path.insert(0, str(Path(sys.argv[3]) / "scripts"))
+from apply_objects import declared_objects
+declared = declared_objects(Path(sys.argv[3]) / "db" / "objects")
 
 # Reviewed ignore list: names on production that are managed outside
 # db/objects (e.g. legacy rbac helpers) and must not read as ghosts.
