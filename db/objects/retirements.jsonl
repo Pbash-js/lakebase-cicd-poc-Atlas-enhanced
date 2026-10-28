@@ -1,0 +1,2 @@
+{"stmt": "DROP VIEW IF EXISTS v_order_totals;", "reason": "fn_total_for_customer return type BIGINT -> INTEGER (PR #10); the view depends on the function, so it is dropped first and recreated by the 04_views replay", "requested_in": "PR#10"}
+{"stmt": "DROP FUNCTION IF EXISTS fn_total_for_customer(BIGINT);", "reason": "signature retirement: fn_total_for_customer return type BIGINT -> INTEGER (PR #10); CREATE OR REPLACE cannot change a return type", "requested_in": "PR#10"}
