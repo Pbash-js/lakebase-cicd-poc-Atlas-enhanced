@@ -36,7 +36,7 @@ Start here. Each row says what you want to do and where to look.
 | --- | --- | --- |
 | Make a schema change (tables, columns, indexes, enums) | Edit `db/schema/schema.sql`, run `./scripts/gen_migration.sh`, commit both, open a PR | [Developer loop](#developer-loop) |
 | Make a code-object change (function, procedure, view, trigger) | Edit the file under `db/objects/<layer>/`, push, open a PR | [Developer loop](#developer-loop) |
-| Delete an object or change a function signature/return type | Append a JSON line to `db/objects/retirements.jsonl` in the same PR | [Retirements: drops and signature changes](#retirements-drops-and-signature-changes) |
+| Rename an object (function/proc/view) | Rename in the file, deploy: the ghost check lists the old name and offers to append its retirement line interactively (local only). Or append the JSON line yourself first | [Retirements: drops and signature changes](#retirements-drops-and-signature-changes) |
 | Understand what CI blocks and why | See the gates table | [What CI fails on (exactly)](#what-ci-fails-on-exactly) |
 | Understand how the pipeline behaves end to end | Follow one commit through the three stages | [Architecture](#architecture) |
 | Check whether something you need ships here | Look for it in the "not in this repo" table before writing it | [What is NOT in this repo](#what-is-not-in-this-repo) |
@@ -236,6 +236,25 @@ unchanged dependent objects). In the same PR:
    so a line never re-executes on later deploys and removing it from the
    file is optional cleanup, not urgency.
 4. The drift probe's def comparison keeps the result honest afterwards.
+
+If you forget the line, the deploy catches it: a post-replay ghost check fails
+when a live public object is declared nowhere in `db/objects`. Locally it
+offers one-shot cleanup:
+
+```
+  ✗ ghost objects: live in public but declared nowhere in db/objects
+      sp_mark_shipped (procedure): add {"stmt": "DROP PROCEDURE IF EXISTS sp_mark_shipped;", ...}
+  Add DROP statements for these 1 object(s) to db/objects/retirements.jsonl and re-run? [y/N] y
+  ✓ appended 1 retirement line(s); re-running deploy
+```
+
+`y` appends the lines (correct kind, dependents before dependees) and re-runs
+the deploy; the ledger then records them, so they never re-execute. CI/CD
+never prompts: there the ghost list is a hard failure with the exact lines to
+add. Note Atlas itself cannot help here (verified on v1.3.5 Pro: the
+`-- atlas:renamed_from` directive is a table/column/index feature; a function
+rename plans DROP + CREATE regardless), and its interactive rename prompt
+never fires for this repo's object replay.
 
 ### Rollback
 

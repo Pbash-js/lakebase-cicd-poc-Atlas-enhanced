@@ -103,10 +103,21 @@ else
 fi
 
 echo "▶ 2/3 objects (idempotent replay)"
+_rc=0
 python scripts/apply_objects.py \
   --host "${HOST}" --port 5432 --dbname databricks_postgres \
   --user "${DATABRICKS_PG_USER}" --password "${TOKEN}" \
-  --sslmode require --objects-root db/objects
+  --sslmode require --objects-root db/objects || _rc=$?
+if [ "$_rc" = 3 ]; then
+  # ghosts were retired interactively; run once more to apply + record them
+  echo "▶ 2/3 objects (re-run after interactive retirement)"
+  python scripts/apply_objects.py \
+    --host "${HOST}" --port 5432 --dbname databricks_postgres \
+    --user "${DATABRICKS_PG_USER}" --password "${TOKEN}" \
+    --sslmode require --objects-root db/objects
+elif [ "$_rc" != 0 ]; then
+  exit "$_rc"
+fi
 
 echo "▶ 3/3 rbac (idempotent replay)"
 if [ -f scripts/apply_rbac.py ]; then

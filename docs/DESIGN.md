@@ -92,6 +92,7 @@ CE runs whenever `ATLAS_EDITION=ce` (the runtime default until the Pro license l
 | CE gap | Closure in this repo | Residual limit |
 | --- | --- | --- |
 | Objects unsupported | `db/objects/` replayed by `apply_objects.py` in layer order, one outer transaction | layer ordering is convention, not a dependency graph |
+| Object renames | post-replay ghost check: live-but-undeclared objects fail the deploy; interactive (local TTY) runs can append the retirement lines in one confirmation and re-run; CI/CD hard-fails with the lines |
 | Object drops / signature changes | `retirements.jsonl` manifest, dependents before dependees, no CASCADE | manual authorship |
 | Trigger edits skipped | `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` in every trigger file | none |
 | No lint | regex destructive gate in `pr-validation.yml`: `DROP TABLE`/`DROP SCHEMA`/`TRUNCATE` fail a PR without the `destructive-approved` label | regex, not parsing |
