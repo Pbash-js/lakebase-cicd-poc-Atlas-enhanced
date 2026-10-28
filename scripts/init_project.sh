@@ -20,6 +20,10 @@ fi
 cat > .env.local <<EOF
 export LAKEBASE_PROJECT="$PROJECT"
 export DATABRICKS_PG_USER="$ROLE"
+# Local default: Pro declarative inner loop (branch_test converges the branch
+# to desired state without a migration). CI/CD ignore this — GITHUB_ACTIONS
+# forces the versioned path; 'ce' here restores the migrations-first loop.
+export ATLAS_EDITION=pro
 EOF
 grep -q "^\.env.local$" .gitignore 2>/dev/null || echo ".env.local" >> .gitignore
 echo "✓ wrote .env.local (LAKEBASE_PROJECT=$PROJECT, DATABRICKS_PG_USER=$ROLE)"
@@ -53,21 +57,36 @@ fi
 if ! ls db/migrations/*.sql >/dev/null 2>&1; then
   echo "▶ greenfield: db/migrations is empty - generating initial baseline"
   ./scripts/gen_migration.sh initial
+  echo "✓ initial baseline generated (uncommitted). Not probing: production is"
+  echo "  empty by definition and gets the baseline via PR -> merge -> CD."
+  echo "  Commit db/migrations + db/schema, open the PR, merge, then re-run init."
+  echo "  next: git add db && git commit"
+  exit 0
 fi
 
-# Baseline sanity: the repo's declared state must match the live Lakebase
-# (inherent drift detection, independent of the CI Atlas check). Read-only
-# probe against production; failures here mean fix the repo or the DB BEFORE
-# any deploy. Exit code: 0 clean, 1 drift, 2 probe error.
-echo "▶ checking repo vs Lakebase (drift probe against production)"
+# Baseline sanity: the COMMITTED baseline must match the live Lakebase.
+# The probe runs against a clean export of HEAD (git archive), NOT the
+# working tree: uncommitted WIP is the developer's business (it converges on
+# the dev branch via branch_test) and must never block setup with drift
+# noise. Working-tree changes are only counted and reported, informationally.
+# Exit code: 0 clean, 1 drift, 2 probe error.
+echo "▶ checking committed baseline vs Lakebase (drift probe against production)"
 export LAKEBASE_PROJECT="$PROJECT" DATABRICKS_PG_USER="$ROLE"
-if ./scripts/check_drift.sh; then
-  echo "✓ baseline verified: repo matches Lakebase"
+CLEAN="$(pwd)/.tmp_clean_head"
+rm -rf "$CLEAN"; mkdir -p "$CLEAN"
+git archive HEAD | tar -x -C "$CLEAN"
+WIP=$(git status --porcelain | wc -l | tr -d ' ')
+if (cd "$CLEAN" && ./scripts/check_drift.sh); then
+  echo "✓ baseline verified: committed repo matches Lakebase"
+  [ "$WIP" -gt 0 ] && echo "  ($WIP uncommitted change(s) in your working tree - yours to develop; branch_test converges them on a dev branch)"
+  rm -rf "$CLEAN"
 else
   rc=$?
+  rm -rf "$CLEAN"
   if [ "$rc" = 1 ]; then
-    echo "✗ DRIFT between this repo and Lakebase - see the report above." >&2
-    echo "  Do not deploy until resolved (the CI Atlas gate will also reject it)." >&2
+    echo "✗ DRIFT between the committed repo and Lakebase - see the report above." >&2
+    echo "  Your working tree is NOT the cause (probe ran on a clean HEAD export)." >&2
+    echo "  Fix the committed state (or prod) before deploying; the CI Atlas gate will also reject it." >&2
   else
     echo "✗ drift probe itself failed (auth/infra) - investigate before deploying." >&2
   fi
