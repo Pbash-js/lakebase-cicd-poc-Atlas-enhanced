@@ -128,36 +128,28 @@ jobs:
       - name: Install Python deps
         run: pip3 install "psycopg[binary]==3.2.9" "pytest==8.3.5"
 
-      # Environment-aware rehearsal: the PR's BASE branch selects the workspace
-      # whose baseline the rehearsal forks from (dev->Dev, qa->QA, release/*->Stage,
-      # prod|main->Prod). Workspace projects are repo variables set when the
-      # workspace is provisioned; until then every PR rehearses against the prod
-      # project (the only live one) with a notice.
-      - name: Resolve rehearsal workspace from base branch
+      # Environment-aware rehearsal: the PR's BASE branch selects the environment
+      # via config/environments.yml (single source of truth); the rehearsal fork
+      # comes off that environment's database. Non-baseline bases fall back to prod.
+      - name: Resolve rehearsal environment from base branch
         env:
           BASE: ${{ github.base_ref }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: |
-          case "$BASE" in
-            dev)        P="${{ vars.LAKEBASE_PROJECT_DEV || secrets.LAKEBASE_PROJECT }}" ;;
-            qa)         P="${{ vars.LAKEBASE_PROJECT_QA || secrets.LAKEBASE_PROJECT }}" ;;
-            release/*)  P="${{ vars.LAKEBASE_PROJECT_STAGE || secrets.LAKEBASE_PROJECT }}" ;;
-            *)          P="${{ secrets.LAKEBASE_PROJECT }}" ;;
-          esac
-          if [ "$P" = "${{ secrets.LAKEBASE_PROJECT }}" ] && [ "$BASE" != "prod" ] && [ "$BASE" != "main" ]; then
-            echo "::notice::base '$BASE': its workspace project is not provisioned — rehearsing against the prod project baseline"
-          fi
-          echo "LAKEBASE_PROJECT=$P" >> "$GITHUB_ENV"
+          pip3 install -q "pyyaml==6.0.2"
+          python3 scripts/resolve_env.py "$BASE" rehearsal
 
-      - name: Recreate ephemeral PR branch (fresh fork of CURRENT production every run)
+      - name: Recreate ephemeral PR branch (fresh fork of the environment database every run)
         env:
           PR_ID: ${{ github.event.pull_request.number }}
         run: |
           . scripts/lib.sh
           PR_BRANCH="pr-${PR_ID}"
           BR_PATH="projects/${LAKEBASE_PROJECT}/branches/${PR_BRANCH}"
-          echo "▶ recreating ${PR_BRANCH} off current production (24h TTL)"
+          echo "▶ recreating ${PR_BRANCH} off current ${TARGET_BRANCH} (24h TTL)"
           lb_wait_branch_gone "$BR_PATH" || { echo "::error::old ${PR_BRANCH} did not delete in time"; exit 1; }
-          lb_create_branch "$LAKEBASE_PROJECT" "$PR_BRANCH" production 86400
+          lb_create_branch "$LAKEBASE_PROJECT" "$PR_BRANCH" "$TARGET_BRANCH" 86400
           # ACTIVE = ready; IDLE = suspended (scale-to-zero), wakes on first connection
           lb_wait_endpoint "${BR_PATH}/endpoints/primary" || { echo "::error::endpoint did not become ready"; exit 1; }
 

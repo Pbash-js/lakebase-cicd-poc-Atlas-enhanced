@@ -8,7 +8,7 @@ Atlas Pro is the deliverable: the declarative desired state, the official GitHub
 
 ## 1. System overview
 
-One git repository carries the database schema, the procedural objects, the migration history and the deployment machinery. GitHub Actions runs CI on every pull request and CD on every merge to `main`. Databricks Lakebase Postgres is the database platform: one project (`core-app-db`), one production branch, and ephemeral branches for every other purpose.
+One git repository carries the database schema, the procedural objects, the migration history and the deployment machinery. GitHub Actions runs CI on every pull request and CD on every push to a baseline branch (`dev`, `qa`, `release/x.y`, `prod`: see the branch model in section 2). Databricks Lakebase Postgres is the database platform: four workspace deployments (dev, qa, stage, prod) over one shared project topology, with ephemeral branches for every other purpose.
 
 ```
 SOURCE (Git)                 DEPLOYMENT                              DATABASE (Lakebase)
@@ -38,7 +38,26 @@ One Lakebase project, branch-based isolation:
 | `recovery-<run>` | 7d | Pre-deploy PITR restore point, forked by CD before any apply | created by CD |
 | drift-probe | self-deleting | Object-replay comparison (CE drift mode) | scheduled monitor |
 
-Lakebase branches are temporary database state. They are never merged upward; git carries release lineage. The promotion path is a code path (PR to `main`, then CD).
+Lakebase branches are temporary database state. They are never merged upward; git carries release lineage. The promotion path is a code path (PR to the next baseline branch, then CD).
+
+### Git baseline branches
+
+Four baseline branches map 1:1 to the four workspaces; `feat/*`, `hotfix/*` and merge-down branches are short-lived. `main` is retired from the flow: the default branch is `dev`.
+
+| Baseline branch | Workspace | Bundle target | CD trigger | Merge gate |
+| --- | --- | --- | --- | --- |
+| `dev` | Dev | `dev` | push to `dev` | PR from `feat/*`: 1 review + `validate` check |
+| `qa` | QA | `qa` | push to `qa` | PR from `dev`: 1 review + check |
+| `release/x.y` | Stage | `stage` | push to `release/x.y` | PR from `qa`: 1 review + CODEOWNERS + check |
+| `prod` | Prod | `prod` | push to `prod` | PR from `release/x.y`: 2 reviews + check + `production` environment reviewers |
+
+Rules:
+
+- **Parent is intent.** `feat/*` branches from `dev` (a change that cannot pass QA is not ready to merge). `hotfix/*` branches from `prod`: the parent is always the branch whose state production runs.
+- **One live release line.** `release/x.y` is cut from `qa` when a version is ready for Stage parity, promoted to `prod`, and retired when the next line is cut. Baselines never take direct commits; all changes arrive by PR.
+- **Hotfix propagation is merge-down.** After the prod fix lands (`hotfix/* -> prod`), merge-down PRs carry it back: `prod -> release/x.y -> qa -> dev`. The exactly-once ledger makes each downward merge apply only what that workspace lacks.
+- **Two approval controls.** Branch protection approves the code (per-baseline review counts + required checks); GitHub environments approve the deployment (`stage` and `production` carry required reviewers). A merge never deploys by itself.
+- **Environment map is one file.** `config/environments.yml` is the single source of truth: git branch -> workspace credentials (by secret name), Lakebase project, database (Lakebase branch), bundle target and deploy gate. Every workflow resolves through it; moving an environment to another workspace or database edits that file only. Current topology (Free Edition): one workspace, one project, one long-lived Lakebase branch per environment (`env-dev`, `env-qa`, `env-stage`, `production`). PR rehearsal forks from the base branch's environment database (non-baseline bases fall back to prod).
 
 ## 3. Repository structure
 
@@ -96,7 +115,7 @@ The migration pipeline is the audit spine and runs everywhere regardless of edit
 
 1. `gen_migration.sh`: dev branch + `template0` scratch, `atlas migrate diff` over `db/schema/*.sql` only (a plan containing object DDL hard-fails: objects ride the replay, never migrations).
 2. CI rehearses on a fresh `pr-<n>` fork: lint (Pro) or regex destructive gate (CE), immutability gate, plan check (migrations must converge to desired state), apply, objects, `TEST_SUITE=all`.
-3. CD: credential mint, recovery fork, official apply (Pro) or `apply_migrations_atlas.sh --tx-mode all` (CE), objects, smoke tests, to production.
+3. CD: credential mint, recovery fork, official apply (Pro) or `apply_migrations_atlas.sh --tx-mode all` (CE), objects, smoke tests, to the target workspace baseline.
 
 ## 6. Engine: Atlas CE (fallback)
 
