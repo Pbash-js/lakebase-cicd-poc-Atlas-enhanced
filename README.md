@@ -1,277 +1,184 @@
-# Lakebase CI/CD: dual-engine migrator (Atlas Pro primary, CE fallback)
+# Lakebase CI/CD
 
 Architecture and design rationale: [docs/DESIGN.md](docs/DESIGN.md). This README is the operating manual.
 
-Migration pipeline for Lakebase Postgres with two switchable engines:
-
-- **Atlas Pro track (default target architecture)**: the official Atlas
-  GitHub Actions do the work: `setup-atlas`, `migrate/lint` on every PR,
-  `migrate/push` to the Schema Registry on merge, and `migrate/apply` to the
-  database. Atlas owns planning, linting, versioning and deployment; this
-  repo provides the desired state, the Lakebase topology and the credential
-  plumbing.
-- **Atlas CE track (fallback, and the plan-check engine under Pro)**: the same repo mechanics
-  with verified repo code closing every CE gap (transactional applies,
-  trigger recreation, retirement manifest, destructive gate, drift probe).
-
-The engine is one runtime setting: `ATLAS_EDITION=pro|ce` (see
-[Atlas edition switch](#atlas-edition-switch-ce--pro)). One binary, no fork:
-a migration applied by either track lands in the same
-`atlas_schema_revisions` ledger. GitHub Actions runs CI on every PR and CD
-on merge.
+CI/CD pipeline for Databricks Lakebase Postgres, built on **Atlas Pro**: declarative desired state, official GitHub Actions, Schema Registry. Atlas CE remains available as a fallback, with the limitations listed in [CE fallback](#ce-fallback-limitations). One binary, one repo: a migration applied by either lands in the same `atlas_schema_revisions` ledger.
 
 ```
-SOURCE (Git)                DEPLOYMENT                                        DATABASE (Lakebase)
-db/schema/schema.sql   ->   PRO:   setup-atlas · migrate/lint · migrate/push  ->  pr-<n> rehearsal (fresh fork every run)
-db/objects/ (code SQL)        + migrate/apply (official action)                ->  production (on merge)
-                              CE:    gen_migration.sh · apply_migrations_atlas  ->  drift-probe (daily monitor)
-                                     branch_test.sh (CE entrypoint)                   recovery-<run_id> (pre-deploy PITR fork)
+SOURCE (Git)                       DEPLOYMENT                                   DATABASE (Lakebase)
+db/schema/ (desired state)   ->    LOCAL:  branch_test.sh (Pro declarative      ->  dev-<you> sandbox (7d TTL)
+db/objects/ (code SQL)               apply: schema + objects, one tx)             pr-<n> rehearsal (24h, per PR)
+db/migrations/ (versioned)   ->    CI:     official Atlas lint + rehearsed      ->  production (on merge, via CD)
+                                     apply on pr-<n> (versioned path)             recovery-<run> (pre-deploy PITR)
+                             ->    CD:     official migrate/apply to production
 ```
+
+## The loop: test first, version last
+
+Pro's declarative engine runs the local inner loop. The migration is an artifact frozen only when a change is proven, not a tax on every experiment.
+
+```
+1. edit db/schema/*.sql and/or db/objects/**
+2. ./scripts/branch_test.sh        # Pro declarative apply converges the dev
+                                   # branch to the FULL desired state, one tx.
+                                   # No migration needed. Re-run freely.
+3. (green) ./scripts/gen_migration.sh <name>   # freeze the versioned artifact
+4. commit migration + schema files, open PR    # CI rehearses the MIGRATIONS
+5. merge -> CD applies to production (versioned, auditable)
+```
+
+Hard rule: CI/CD always run the versioned path (the `GITHUB_ACTIONS` gate). The rehearsal must exercise the migration artifacts, and production is never converged by a declarative diff. Extensions used by code objects are declared in `db/schema/00_extensions.sql` so the declarative diff plans them.
+
+Tell: a Pro run prints `▶ Pro declarative: schema apply ...`; a CE run prints `▶ 1/3 migrations`. If you see `1/3` locally, `ATLAS_EDITION` is not `pro` (`.env.local` sets it; `init_project.sh` writes it).
 
 ## How to read this README / how to use this repo
 
-Start here. Each row says what you want to do and where to look.
-
-| You want to... | Do this | Read this section |
+| You want to... | Do this | Read |
 | --- | --- | --- |
-| Make a schema change (tables, columns, indexes, enums) | Edit `db/schema/schema.sql`, run `./scripts/gen_migration.sh`, commit both, open a PR | [Developer loop](#developer-loop) |
-| Make a code-object change (function, procedure, view, trigger) | Edit the file under `db/objects/<layer>/`, push, open a PR | [Developer loop](#developer-loop) |
-| Rename an object (function/proc/view) | Rename in the file, deploy: the ghost check lists the old name and offers to append its retirement line interactively (local only). Or append the JSON line yourself first | [Retirements: drops and signature changes](#retirements-drops-and-signature-changes) |
-| Understand what CI blocks and why | See the gates table | [What CI fails on (exactly)](#what-ci-fails-on-exactly) |
-| Understand how the pipeline behaves end to end | Follow one commit through the three stages | [Architecture](#architecture) |
-| Check whether something you need ships here | Look for it in the "not in this repo" table before writing it | [What is NOT in this repo](#what-is-not-in-this-repo) |
-| Understand what Atlas Pro would replace | Compare the two columns | [CE vs Pro: what is closed here, what remains](#ce-vs-pro-what-is-closed-here-what-remains) |
-| Wire the repo into a fresh workspace/project | Secrets table + setup steps | [Setup](#setup-once), [GitHub secrets](#github-secrets-settings---secrets-and-variables---actions) |
+| Day-zero setup on a fresh clone | `./scripts/init_project.sh` | [Day zero](#day-zero) |
+| Make a schema change | Edit `db/schema/*.sql`, `branch_test.sh`, then `gen_migration.sh` | [The loop](#the-loop-test-first-version-last) |
+| Make a code-object change | Edit the file under `db/objects/<layer>/` | [The loop](#the-loop-test-first-version-last) |
+| Rename/drop an object | Add a retirement line (the deploy tells you exactly what) | [Retirements](#retirements-drops-and-signature-changes) |
+| Understand what CI blocks | Gates table | [What CI fails on](#what-ci-fails-on-exactly) |
+| Know what CE cannot do | Limitations table | [CE fallback](#ce-fallback-limitations) |
+| Configure repo settings | Secrets/variables tables | [GitHub configuration](#github-configuration-settings) |
 | Investigate a `schema-drift` issue | Run the probe manually against any branch | [Drift monitor](#drift-monitor-scheduled) |
-
-The full design rationale lives outside this repo: the CI/CD plan document
-(`Lakebase-CICD-Plan.md`: design decisions, bundle rules, backlog) and the
-CE-vs-Pro deck (`atlas-ce-vs-pro-deck-v4.html`: ownership split, cost,
-decision gates). This README is the repo's as-built truth.
-
-## Architecture
-
-Three stages. Git is the only source of truth; the deployment engine
-provisions resources from it; Lakebase hosts the ephemeral rehearsal
-branches and the production branch.
-
-```
-┌────────────────────────────────────────────┐
-│ 1. SOURCE CODE (Git)                       │
-│ schema.sql, migrations, objects, tests,    │
-│ databricks.yml, workflows                  │
-└─────────────────────┬──────────────────────┘
-                      ▼
-┌────────────────────────────────────────────┐
-│ 2. DEPLOYMENT ENGINE (DAB CLI + Atlas CE)  │
-│ databricks.yml: production branch/endpoint │
-│ branch_test.sh: sandbox branches + SQL       │
-│ gen_migration.sh: plan · apply: the ledger │
-└─────────────────────┬──────────────────────┘
-                      ▼
-┌────────────────────────────────────────────┐
-│ 3. DATABASE RUNTIME (Lakebase DB)          │
-│ Copy-on-write Postgres branches:           │
-│ pr-<n> rehearsal (24h TTL, fresh fork),    │
-│ dev sandboxes (7d TTL), production         │
-│ (no expiry), drift-probe (daily,           │
-│ self-deleting)                             │
-└────────────────────────────────────────────┘
-```
-
-Two kinds of branch exist. Git branches carry code release lineage.
-Lakebase branches are temporary database state: rehearsal, sandbox, probe,
-restore. Never merge a database branch upward; the promotion path is a code
-path (PR to `main`, then CD).
 
 ## What each file does
 
 | Path | Role |
 | --- | --- |
-| `db/schema/*.sql` | Desired state: declarative SQL (tables, columns, indexes, FKs, enums, schemas). `schema.sql` is the base file; every other `.sql` in the dir is appended after it (sorted) - cross-file FKs must point at objects defined earlier. A `CREATE SCHEMA` in any file makes that schema drift-managed too. Previously only `schema.sql` was planned: extra files were silently invisible (fixed). |
-| `db/migrations/` | Versioned SQL **generated by Atlas**, never hand-edited. Enforced by the CI immutability gate: a PR may only ADD files here. |
-| `db/migrations/atlas.sum` | Atlas integrity file. Rewritten by every generation; Atlas verifies it at apply time, so tampering is always visible. |
-| `db/objects/<layer>/` | Code objects (functions, procedures, views, triggers), one file per object, replayed idempotently in layer order `01_types` -> `05_triggers`. The layer numbers are a manual topological sort: CE cannot model objects, so it cannot order them. |
-| `db/objects/retirements.jsonl` | DROP manifest applied before each replay, one JSON object per line (`stmt`, `reason`, `requested_in?`). Deleting an object file does NOT drop the object; a function signature/return-type change cannot be replayed by `CREATE OR REPLACE` (it silently creates an overload). Both need a line here. Applied lines are recorded in `infra.retirements_applied` and never re-execute. |
-| `db/objects/drift_ignore.jsonl` | Reviewed ignore list for the drift probe's ghost check: one JSON object per line (`object`, `reason`) - names that live on the database but are managed outside `db/objects/`. |
-| `db/tests/smoke/` | Read-only smoke tests, safe against production. The default (and CD) suite. |
-| `db/tests/integration/` | Data-writing tests, dev/PR branches only (`TEST_SUITE=all`; refused against production). |
-| `scripts/gen_migration.sh` | The one command for schema changes: creates a dev branch, builds a throwaway scratch DB from `template0`, runs `atlas migrate diff`, writes the migration. `--check` mode fails when committed migrations do not converge to desired state. |
-| `scripts/apply_migrations_atlas.sh` | Applies pending migrations via `atlas migrate apply --tx-mode all`: the entire pending batch is ONE transaction, so a failure halfway through leaves nothing applied. Ledger: `atlas_schema_revisions` (Atlas-managed: exactly-once, per-revision checksums, advisory lock). Baseline adoption is an explicit operator step: `ATLAS_BASELINE=<version>`, never auto-detected. |
-| `scripts/apply_objects.py` | Replays `db/objects/` in layer order, and applies `retirements.jsonl` first. The WHOLE run is one transaction: objects applied before a failure roll back with it. CE track and CI/CD only. |
-| `scripts/build_desired.py` | Builds the full Pro desired state (`db/schema/*.sql` + `db/objects` in layer order) to one file. Single source of truth for the declarative apply and the Pro drift diff. |
-| `scripts/apply_desired.py` | Pro declarative apply (local inner loop): plans with `atlas schema diff`, strips Lakebase platform-owned statements (event triggers are DB-level resources Atlas cannot `--exclude`), executes the plan in one transaction. |
-| `scripts/check_drift.sh` | Drift probe: structural diff (live branch vs `schema.sql`) + object comparison (live branch vs a repo replay on a probe branch). Exits 1 on drift, 2 on probe error. Pro mode (`ATLAS_EDITION=pro`): one object-aware `atlas schema diff` against `schema.sql + db/objects`, no probe branch needed |
-| `scripts/rollback_migration.sh` | Pro-only `atlas migrate down` wrapper: reverts the last N migrations with the migrations' pre-revert data checks enforced. Refuses production (restore the recovery branch instead). CE: not available, recovery branch or forward migration |
-| `scripts/branch_test.sh` | Deploy entrypoint: mints a 1-hour OAuth credential, then tests. Pro local: one declarative apply of the full desired state (no migration needed). CE/CI/CD: migrations apply -> objects replay. Production is reachable only inside GitHub Actions CD. |
-|
-| `.github/workflows/pr-validation.yml` | Per-PR checks (see the gates table below). Recreates the `pr-<n>` branch fresh off current production on every run. |
-| `.github/workflows/cd-promotion.yml` | On merge to main: DAB deploy + Atlas apply to production, serialized, never cancelled. |
-| `.github/workflows/schema-drift-monitor.yml` | Daily scheduled drift probe; on drift it opens/updates a `schema-drift` issue and fails. |
+| `db/schema/*.sql` | Desired state (tables, columns, indexes, FKs, enums, schemas). `schema.sql` loads first; other files append sorted; cross-file FKs must point at objects defined earlier. A `CREATE SCHEMA` in any file makes that schema drift-managed. `00_extensions.sql` declares extensions (planned declaratively under Pro). |
+| `db/objects/<layer>/` | Code objects, one file per object, replayed in layer order `01_types` -> `05_triggers`. **Nested folders are supported** (e.g. `03_procedures/Authz/`); the folder is organizational, the SQL names the target schema. The layer numbers are the CE-ordering convention; Pro plans from the desired state itself. |
+| `db/objects/retirements.jsonl` | DROP manifest applied before each replay (`stmt`, `reason`, `requested_in?`). Deleting a file does NOT drop the object; a signature/return-type change cannot replay via `CREATE OR REPLACE` (it silently creates an overload). Both need a line here. Applied lines are recorded in `infra.retirements_applied`, never re-execute, and replays print one quiet summary line (no DROP noise). |
+| `db/objects/drift_ignore.jsonl` | Reviewed ignore list for the ghost check (`object`, `reason`). |
+| `db/migrations/` + `atlas.sum` | Versioned SQL **generated by Atlas**, never hand-edited. CI immutability gate: a PR may only ADD files here. `atlas.sum` is verified at every apply, so tampering is always visible. |
+| `db/tests/smoke/` | Read-only tests, safe against production. Default and CD suite. |
+| `db/tests/integration/` | Data-writing tests, PR/dev branches only (`TEST_SUITE=all`). |
+| `scripts/init_project.sh` | Single bootstrap. Prompts project id + Postgres role; **offers to create the Lakebase project when missing** (greenfield: `create-project`, then waits for the production endpoint). Writes `.env.local` (gitignored, includes `ATLAS_EDITION=pro`). Greenfield: auto-generates the initial baseline when `db/migrations` is empty and stops with next steps (prod is empty by definition; the baseline ships via PR -> CD). Otherwise probes the **committed baseline** (a clean `git archive HEAD` export) against production: uncommitted WIP never blocks setup, it is reported as a count. |
+| `scripts/branch_test.sh` | Deploy entrypoint. Mints a 1-hour credential. **Pro local (default)**: one declarative apply of the full desired state (schema + objects, one transaction, no migration needed). **CE or CI/CD**: migrations apply -> objects replay. Refuses `TARGET_BRANCH=production` outside GitHub Actions. |
+| `scripts/gen_migration.sh` | Creates a dev branch, plans `atlas migrate diff` against a `template0` scratch, writes the migration. Plans `db/schema/*.sql` only; hard-fails a plan containing object DDL (objects ride the replay). `--check` mode: fails when committed migrations do not converge to desired state. |
+| `scripts/build_desired.py` | Builds the full Pro desired state (`db/schema/*.sql` + `db/objects` layers, recursive) to one file. Single source of truth for the declarative apply and the Pro drift diff. |
+| `scripts/apply_desired.py` | Pro declarative apply: plans with `atlas schema diff` (pure-SQL format), strips Lakebase platform-owned statements (event triggers, see platform facts), executes in ONE transaction. |
+| `scripts/apply_objects.py` | CE replay: layered, one outer transaction, ghost check after commit (extension-owned objects, `deptype='e'`, are never ghosts). CE track and CI/CD only. |
+| `scripts/apply_migrations_atlas.sh` | CE/CI migrations via `atlas migrate apply --tx-mode all` (one transaction for the batch), `atlas migrate validate` first. Baseline adoption is an explicit operator step (`ATLAS_BASELINE=<version>`), never auto-detected. |
+| `scripts/check_drift.sh` | Drift probe. Pro mode: one object-aware `atlas schema diff` against the full desired state, no probe branch. CE: structural diff + probe-branch object replay + ghost check. Exits 1 on drift, 2 on probe error. |
+| `scripts/rollback_migration.sh` | `atlas migrate down` wrapper (Pro): reverts the last N migrations with pre-revert data checks. Refuses production (recovery branch instead). CE: not available. |
+| `.github/workflows/pr-validation.yml` | Per-PR gates + rehearsal on a fresh `pr-<n>` fork. |
+| `.github/workflows/cd-promotion.yml` | On merge: credential mint, recovery fork, official Atlas apply, objects, tests, to production. Serialized, never cancelled. |
+| `.github/workflows/schema-drift-monitor.yml` | Daily drift probe; opens/updates a `schema-drift` issue. |
+| `.github/actions/setup-atlas/` | Composite action: pinned Atlas install for CI. |
 
-## Engine ownership: what Atlas Pro runs, what stays repo code (CE fallback)
+## Pro vs CE: who owns what
 
-The design follows Atlas Pro: wherever the official CLI/actions cover a
-concern, the Pro track uses them natively and the bespoke code below is
-CE-track-only. "CE track" in the table means the fallback still provides it
-when running on the community edition.
-
-| Concern | Pro track | CE track (fallback) |
+| Concern | Pro (deliverable) | CE (fallback) |
 | --- | --- | --- |
+| Local schema testing | declarative apply, no migration | requires a generated migration first |
 | Plan / generate migration | `ariga/atlas-action/migrate/diff` (official) | `scripts/gen_migration.sh` (template0 scratch in the branch) |
-| Safety lint | `migrate/lint` action: native analyzers, PR report | Regex destructive gate + `destructive-approved` label |
-| Apply | `migrate/apply` action with a minted 1-hour credential | `scripts/apply_migrations_atlas.sh` (`--tx-mode all`) |
-| Cloud versioning | `migrate/push` → [Schema Registry](https://pragmatix.atlasgo.cloud/dirs/4294967296) | Git only (`atlas.sum`) |
-| Drift detection | object-aware `atlas schema diff` (one command, no probe branch) | probe-branch replay + definition compare + ghost check |
-| Rollback | `atlas migrate down` (`scripts/rollback_migration.sh`, Pro-gated) | recovery branch (pre-deploy PITR fork) or forward migration |
-| Objects (functions/views/triggers) | declarative: part of the desired state, planned by Atlas (local inner loop: one `atlas schema diff`-planned apply via `apply_desired.py`; platform event triggers filtered) | layered replay + `retirements.jsonl` |
-| Managed Schema Monitoring | Atlas Cloud product (connect the prod DB in the portal) | daily probe + `schema-drift` issue |
-| RBAC as code | not in either track | not in either track (backlog) |
+| Safety lint | native analyzers, PR report | regex destructive gate + `destructive-approved` label |
+| Apply | official `migrate/apply` with a minted 1-hour credential | `apply_migrations_atlas.sh` (`--tx-mode all`) |
+| Cloud versioning | `migrate/push` -> Schema Registry | Git only (`atlas.sum`) |
+| Drift detection | one object-aware `atlas schema diff` (no probe branch) | probe-branch replay + definition compare + ghost check |
+| Objects | declarative: part of desired state, planned + applied by Atlas (platform event triggers filtered) | layered replay + `retirements.jsonl` |
+| Rollback | `atlas migrate down` (dev branches only) | recovery branch or forward migration |
+| Monitoring | Atlas Cloud Schema Monitoring (register prod post-license) | daily probe + `schema-drift` issue |
 
-Deliberately bespoke under BOTH tracks: none for the Pro track's core path.
-The only Lakebase-specific glue is credential minting (1-hour OAuth
-credential via `generate-database-credential`, below) and the DAB bundle,
-that is the platform's own deployment surface, not an Atlas concern.
+The only Lakebase-specific glue is credential minting (`generate-database-credential`, below) and the DAB bundle; that is the platform's deployment surface, not an Atlas concern.
+
+## CE fallback: limitations
+
+CE is a serviceable fallback, not an equal. What you give up:
+
+| Limitation | Consequence |
+| --- | --- |
+| No object modeling | CE cannot diff functions/procedures/views/triggers against desired state; correctness rests on the replay + ghost-check convention |
+| Schema changes need a migration BEFORE testing | `branch_test.sh` cannot converge a branch without `gen_migration.sh`; the test-first loop collapses to version-first |
+| Layer ordering is convention | the numbered folders are a manual topological sort, not a dependency graph |
+| Objects and migrations are two transactions | each atomic, the pair not: a schema+object PR can apply schema and fail objects |
+| Lint is regex | `DROP TABLE`/`DROP SCHEMA`/`TRUNCATE` tripwire with a label, not parsed analysis |
+| Object drift is approximated | name-level compare on a probe branch, not a real plan |
+| Rollback unavailable | recovery branch or forward migration only |
+| No cloud versioning, monitoring, or lineage | Git is the only history; detection is once daily |
+
+Fallback activation: `ATLAS_EDITION=ce` (env locally, repo variable in CI, default `ce` when unset). The CE closures that exist as repo code (transactional replays, retirements, destructive gate, drift probe) stay live and untouched.
 
 ## Database platform facts (verified live)
 
-- Lakebase Postgres runs **PostgreSQL 17.11** (not 18), so the CI dev-database
-  service container and `docker://postgres/17/dev` dev-urls match it.
-- Credentials: no static DB URL exists or should. The pattern is the
-  documented Lakebase service-principal flow: long-lived SP OAuth secret
-  (up to 730 days) → 1-hour workspace token → 1-hour database credential,
-  username = SP client id = the SP's Postgres role. See
-  [docs/IDENTITIES.md](docs/IDENTITIES.md).
+- Lakebase Postgres runs **PostgreSQL 17.11**: CI dev containers pinned to `postgres:17`, dev-urls `docker://postgres/17/dev`.
+- No static DB URL exists or should. Pattern: SP OAuth secret (up to 730 days) -> 1-hour workspace token -> 1-hour database credential; username = SP client id = the SP's Postgres role. See [docs/IDENTITIES.md](docs/IDENTITIES.md).
+- Lakebase platform-owned objects (`__db_system` schema, `on_create_*`/`on_drop_*` event triggers) are not managed by this repo. Atlas cannot exclude event triggers from plans (verified v1.3.5: `--exclude` does not match them, `atlas.hcl` `skip` blocks are lint-analyzer only), so `apply_desired.py` filters them at execution while Atlas still owns the plan. A schema allowlist (`public` + every declared schema) keeps platform schemas out of every diff.
 
-## Developer loop
+## Day zero
 
 ### Setup (once)
 
 ```
 git clone https://github.com/Pbash-js/lakebase-cicd-poc-Atlas-enhanced.git
 cd lakebase-cicd-poc-Atlas-enhanced
-curl -sSf https://atlasgo.sh | sh -s -- --community   # Atlas CE binary
-databricks auth login --profile free-edition
+python -m pip install -r requirements.txt     # psycopg, pytest
+databricks auth login
+./scripts/init_project.sh
 ```
 
-Day-zero prerequisites (all four are required; a missing one fails mid-deploy):
+### `./scripts/init_project.sh`
 
-| Prerequisite | How |
-|---|---|
-| Python 3.11+ with deps | `python -m pip install -r requirements.txt` (provides psycopg for the object replay) |
-| `LAKEBASE_PROJECT` | the Lakebase project id, e.g. `core-app-db` (see databricks.yml targets). `export LAKEBASE_PROJECT=core-app-db` |
-| `DATABRICKS_PG_USER` | your Lakebase Postgres role. Find it: `databricks auth describe --profile free-edition` -> the account email (e.g. `you@company.com`) |
-| Databricks CLI auth | `databricks auth login --profile free-edition` (above) |
+The single bootstrap, the only command a new clone needs (`branch_test.sh` and `gen_migration.sh` invoke it when `.env.local` is missing; never in CI, which always sets env vars). It:
 
-The Lakebase project (`core-app-db`) is created once, out-of-band, and is
-never declared in `databricks.yml`: a bundle cannot adopt an existing
-project, so the bundle manages branches and endpoints only, referenced by
-literal path.
-
-### Day zero: `./scripts/init_project.sh`
-
-The single bootstrap. Prompts for project id + Postgres role, checks CLI
-auth, writes `.env.local` (gitignored), then:
-
-- **Greenfield** (empty `db/migrations`): generates the initial baseline
-  migration from the desired state (`db/schema`) automatically - you never
-  hand-write migration 001.
-- **Drift verification**: runs `scripts/check_drift.sh` (read-only probe
-  against production) so you start from a repo that is provably in sync
-  with the live Lakebase. Drift here means fix the repo or the DB before
-  any deploy.
-
-`gen_migration.sh` and `branch_test.sh` call `init_project.sh` themselves
-when run with no `.env.local` and no env vars (never in CI, which always
-sets env vars), so `init_project` is the only command a new clone needs
-to know.
+1. Prompts for the project id and your Postgres role (your Databricks account email); checks CLI auth, starting `databricks auth login` if needed.
+2. Offers to **create the project** when it does not exist (id format validated; `create-project` waits for DONE, then waits for the implicit production endpoint).
+3. Writes `.env.local` (gitignored): `LAKEBASE_PROJECT`, `DATABRICKS_PG_USER`, `ATLAS_EDITION=pro` (the Pro declarative inner loop is the local default; set `ce` to restore migrations-first).
+4. Greenfield (empty `db/migrations`): generates the initial baseline from `db/schema` and stops with next steps. Production is empty by definition; it receives the baseline through PR -> CI -> merge -> CD. No drift hoop.
+5. Otherwise probes the **committed baseline** against production using a clean `git archive HEAD` export. Uncommitted WIP is invisible to the gate: it is yours to develop on a dev branch (`branch_test.sh` converges it declaratively). Drift here means the committed repo and production disagree; fix one before deploying. The CI Atlas gate rejects the same condition.
 
 ### Day one
 
 ```
-./scripts/branch_test.sh    # interactive: creates dev-<you>-<yyyymmdd> off
-                          # production (7-day TTL), waits for the endpoint,
-                          # applies migrations + objects, runs the tests
+./scripts/branch_test.sh    # creates dev-<you>-<yyyymmdd> off production (7d TTL),
+                            # waits for the endpoint, declaratively converges it
+                            # to desired state, runs the tests
 ```
 
-The result is an isolated, disposable copy of production. Nothing done on
-this branch can touch production: the script refuses `TARGET_BRANCH=production`
-outside GitHub Actions CD.
+An isolated disposable copy of production. The script refuses `TARGET_BRANCH=production` outside GitHub Actions CD.
 
-Endpoint quota: the account allows a limited number of concurrently active
-endpoints. Every PR validation forks a `pr-<n>` branch and CI deploys leave a
-`recovery-<run>` branch. If a run fails with "exceeded the limit of concurrently
-active endpoints", reclaim capacity by deleting branches whose work is merged:
+Endpoint quota is limited. If a run fails with "exceeded the limit of concurrently active endpoints", reclaim capacity by deleting branches whose work is merged:
 
 ```
 databricks postgres list-branches "projects/$LAKEBASE_PROJECT" -o json
 databricks postgres delete-branch "projects/$LAKEBASE_PROJECT/branches/pr-<n>"
 ```
 
-Never delete `production` or a `recovery-<run>` branch whose CD run has not
-finished green.
+Never delete `production`, or a `recovery-<run>` whose CD run has not finished green.
 
 ### The daily loop
 
-**Pro (local, default): test first, version last.** `./scripts/branch_test.sh`
-converges the dev branch to the FULL desired state (`db/schema` + `db/objects`)
-with one declarative apply — schema changes test WITHOUT generating a
-migration. Iterate freely; when green, run `./scripts/gen_migration.sh` once
-to freeze the versioned artifact, commit both files, open the PR.
+See [The loop](#the-loop-test-first-version-last). Three change shapes, each a PR:
 
-Three change shapes, each a PR:
+- **Schema change**: edit `db/schema/*.sql`, `branch_test.sh` until green (declarative, no migration), then `gen_migration.sh`, commit BOTH the migration and the schema files, open the PR. CI verifies the migration converges to the desired state; on drift it FAILS the check and comments the planned SQL (CI never commits).
+- **Object change**: edit the object's file under `db/objects/`. Pro local applies it declaratively; it replays idempotently on the next versioned deploy to any branch.
+- **Both**: one PR, both files.
 
-- **Schema change**: edit `db/schema/schema.sql`, test on the branch
-  (declarative, no migration needed), then run `./scripts/gen_migration.sh`,
-  commit BOTH files, push, open a PR. CI verifies the migration matches the
-  desired state; on drift it FAILS the check and comments the planned SQL
-  (CI never commits).
-- **Object change**: edit the object's file under `db/objects/`. Pro local
-  applies it declaratively; it replays idempotently on the next deploy to any
-  branch under CE.
-- **Both**: one `schema.sql` edit plus object files in the same PR.
+### Working from a Databricks workspace
 
-CI/CD always use the versioned path (migrate apply), never the declarative
-apply: the rehearsal must exercise the migration artifacts, and production is
-never drifted to desired state. Extensions used by code objects are declared
-in `db/schema/00_extensions.sql` so the declarative diff plans them.
-
-Working from a Databricks workspace: add the repo as a Git folder
-(workspace -> Add -> Git folder), edit SQL in the workspace editor, commit
-and push from the Git folder dialog, then the same PR -> CI -> merge -> CD
-flow. The database is never edited directly from the workspace.
+Add the repo as a Git folder (workspace -> Add -> Git folder), edit SQL in the workspace editor, commit and push from the Git folder dialog, then the same PR -> CI -> merge -> CD flow. The database is never edited directly from the workspace.
 
 ### Updating an already-deployed object
 
-Edit its `db/objects/` file; the next deploy replays it. If the object
-exists only inside an old applied migration, ship a NEW migration containing
-the `CREATE OR REPLACE` AND the matching `db/objects/` file in the same PR.
-Never edit an applied migration: that is drift, and the pipeline rejects it.
+Edit its `db/objects/` file; the next deploy replays it. If the object exists only inside an old applied migration, ship a NEW migration containing the `CREATE OR REPLACE` AND the matching `db/objects/` file in the same PR. Never edit an applied migration: that is drift, and the pipeline rejects it.
 
 ### Retirements: drops and signature changes
 
-`CREATE OR REPLACE` cannot delete an object or change a function's
-signature/return type (it silently creates an overload). Atlas cannot help
-here either (verified 2026-10-27 on v1.3.5 Pro: it does not extend a plan to
-unchanged dependent objects). In the same PR:
+`CREATE OR REPLACE` cannot delete an object or change a function's signature/return type (it silently creates an overload). In the same PR:
 1. Edit the object file (or delete it).
-2. Append one JSON line per drop to `db/objects/retirements.jsonl`,
-   dependents before dependees (e.g. `DROP VIEW` before the function it
-   calls). CASCADE is deliberately not used:
+2. Append one JSON line per drop to `db/objects/retirements.jsonl`, dependents before dependees (e.g. `DROP VIEW` before the function it calls). CASCADE is deliberately not used:
 
    ```json
-   {"stmt": "DROP VIEW IF EXISTS v_order_totals;", "reason": "fn_total_for_customer return type change", "requested_in": "PR#12"}
+   {"stmt": "DROP VIEW IF EXISTS v_order_totals;", "reason": "return type change", "requested_in": "PR#12"}
    ```
 
-3. Replay verifies the result. Each applied statement is recorded in the
-   `infra.retirements_applied` table; entries already recorded are skipped,
-   so a line never re-executes on later deploys and removing it from the
-   file is optional cleanup, not urgency.
-4. The drift probe's def comparison keeps the result honest afterwards.
+3. Replay verifies the result. Each applied statement is recorded in `infra.retirements_applied`; entries already recorded are skipped, so a line never re-executes. Replays print `retirements: 0 executed, N already consumed (no-op)` instead of re-listing the DROPs.
+4. The drift probe's definition comparison keeps the result honest afterwards.
 
-If you forget the line, the deploy catches it: a post-replay ghost check fails
-when a live public object is declared nowhere in `db/objects`. Locally it
-offers one-shot cleanup:
+If you forget the line, the deploy catches it: the post-replay ghost check fails on the live-but-undeclared object. Locally it offers one-shot cleanup:
 
 ```
   ✗ ghost objects: live in public but declared nowhere in db/objects
@@ -280,19 +187,11 @@ offers one-shot cleanup:
   ✓ appended 1 retirement line(s); re-running deploy
 ```
 
-`y` appends the lines (correct kind, dependents before dependees) and re-runs
-the deploy; the ledger then records them, so they never re-execute. CI/CD
-never prompts: there the ghost list is a hard failure with the exact lines to
-add. Note Atlas itself cannot help here (verified on v1.3.5 Pro: the
-`-- atlas:renamed_from` directive is a table/column/index feature; a function
-rename plans DROP + CREATE regardless), and its interactive rename prompt
-never fires for this repo's object replay.
+CI/CD never prompt: there the ghost list is a hard failure with the exact lines to add. Note Atlas itself does not close this gap (verified v1.3.5: the `-- atlas:renamed_from` directive covers tables/columns/indexes; a function rename plans DROP + CREATE regardless).
 
 ### Rollback
 
-No automated undo. Two forward-moving paths:
-- **Forward migration**: a new migration reversing the change (default for schema).
-- **Branch fork / PITR**: fork from a past point in time to recover bad data.
+No automated undo on production. Two forward-moving paths: a new migration reversing the change (default), or a branch fork / PITR restore for bad data. `rollback_migration.sh` (`atlas migrate down`, pre-revert data checks enforced) exists for dev branches, Pro only.
 
 ## What CI fails on (exactly)
 
@@ -300,154 +199,66 @@ No automated undo. Two forward-moving paths:
 | --- | --- |
 | Infra-file integrity | PR touches `.github/`, `scripts/` or `databricks.yml` without the `infra-approved` label |
 | Migration immutability | PR edits or deletes an existing file in `db/migrations/` (adding new ones is the only allowed change) |
-| Destructive change | NEW migration contains `DROP TABLE`, `DROP SCHEMA` or `TRUNCATE` without the `destructive-approved` label. Regex, not parsing: a tripwire for the bot-generated DROP, not a SQL analyzer. Non-concurrent `CREATE INDEX` warns only (it cannot be concurrent under `--tx-mode all`) |
-| Atlas plan check | `schema.sql` is not covered by `db/migrations`; the step comments the planned SQL on the PR and fails (CI never commits: run `./scripts/gen_migration.sh` locally) |
-| Atlas apply | `atlas.sum` mismatch (tampered history), or a migration fails against the PR branch |
-| Tests | pytest fails on the PR branch (`TEST_SUITE=all` there: smoke + integration) |
+| Destructive change | NEW migration contains `DROP TABLE`, `DROP SCHEMA` or `TRUNCATE` without the `destructive-approved` label. Regex, not parsing: a tripwire for the bot-generated DROP. Non-concurrent `CREATE INDEX` warns only (it cannot be concurrent under `--tx-mode all`) |
+| Atlas plan check | committed migrations do not converge to the desired state; the planned SQL is commented on the PR and the check fails (CI never commits: run `./scripts/gen_migration.sh` locally) |
+| Atlas apply | `atlas.sum` mismatch (tampered history), or a migration fails against the `pr-<n>` rehearsal |
+| Tests | pytest fails on the PR branch (`TEST_SUITE=all`: smoke + integration) |
 
-A label added after a run does not re-fire it. Re-trigger with a fresh
-event: an empty commit, or close/reopen the PR.
+A label added after a run does not re-fire it. Re-trigger with a fresh event: an empty commit, or close/reopen the PR.
 
 ### Rehearsal branch policy
 
-`pr-<n>` is deleted and re-forked off CURRENT production at the start of
-every validation run (copy-on-write, ~2s). A rehearsal therefore always
-replays exactly what merging today would do, even after production moved.
-Runs for one PR are serialized by the workflow's concurrency group.
+`pr-<n>` is deleted and re-forked off CURRENT production at the start of every validation run (copy-on-write, ~2s). A rehearsal replays exactly what merging today would do, even after production moved. Runs for one PR are serialized by the workflow's concurrency group.
 
 ## Drift monitor (scheduled)
 
-`.github/workflows/schema-drift-monitor.yml` runs daily. The probe
-(`scripts/check_drift.sh`):
-1. Structural: `atlas schema diff` of the live branch vs the concatenated `db/schema/*.sql` (base file first, rest sorted), all declared schemas
-   (tables, columns, indexes, constraints, enums), excluding tooling schemas.
-2. Objects: forks the live branch, replays `db/objects/` on the probe, and
-   compares function/view/trigger definitions. Also flags ghost objects
-   present on the database but declared nowhere in `db/objects/` (minus the
-   reviewed `drift_ignore.jsonl`).
-3. On drift: fails, and opens/updates a `schema-drift` GitHub issue with the
-   full report. A probe ERROR (auth, connectivity, replay failure) opens a
-   distinct issue; it is not drift.
+`.github/workflows/schema-drift-monitor.yml` runs daily. The probe (`scripts/check_drift.sh`):
+1. Structural: `atlas schema diff` of the live branch vs the concatenated `db/schema/*.sql` (base file first, rest sorted), all declared schemas, excluding tooling schemas.
+2. Objects: Pro mode includes them in the single diff. CE forks the live branch, replays `db/objects/` on the probe, and compares function/view/trigger definitions. Both modes flag ghost objects declared nowhere in `db/objects/` (minus `drift_ignore.jsonl`).
+3. On drift: fails, and opens/updates a `schema-drift` GitHub issue with the full report. A probe ERROR (auth, connectivity) opens a distinct issue; it is not drift.
 
-This is detection, not managed monitoring: once a day, no changelog/ERD/
-lineage, and the probe costs a short-lived branch per run. The probe source
-branch must be TTL-free (a branch with an expiration cannot host the probe
-child; production is `no_expiry`). Run it manually against any branch:
+This is detection, not managed monitoring: once a day, no changelog/ERD/lineage. Pro's Schema Monitoring product is the upgrade path (register the production DB in the Atlas Cloud portal). The CE probe source branch must be TTL-free (a branch with an expiration cannot host the probe child; production is `no_expiry`). Manual run against any branch:
 
 ```
 LAKEBASE_PROJECT=<id> DATABRICKS_PG_USER=<role> \
 SOURCE_BRANCH=<branch> PROBE_BRANCH=drift-probe ./scripts/check_drift.sh
 ```
 
-## Atlas Pro is the deliverable; CE is the fallback
-
-The **Pro track is the target architecture**: the official Atlas actions
-own lint, versioning and apply. CE remains the verified fallback that runs
-whenever `ATLAS_EDITION=ce`. Live state (2026-10-27): the repo variable is
-`pro` on the trial license (expires 2026-11-03); the plan-check step always
-plans with the CE diff engine (no cloud dependency) and lint/apply use the
-official Pro actions when the edition is pro. After trial expiry the one-line
-switch back is `ATLAS_EDITION=ce`. Every CE closure below stays live and
-untouched.
-
-| CE gap | Closed in this repo? | How / residual limit |
-| --- | --- | --- |
-| Half-applied objects | Yes, verified | `apply_objects.py`: one transaction for the whole replay |
-| Half-applied migrations | Yes, verified | `atlas migrate apply --tx-mode all`: one transaction for the batch |
-| Migrations + objects atomic together | No | Two transactions; each atomic, the pair not (see "not in this repo") |
-| Trigger edits skipped | Yes, verified | Trigger files use `DROP TRIGGER IF EXISTS` + `CREATE` |
-| Object drops / return-type changes | Yes, verified | `retirements.jsonl` + layered replay; drop order is still manual (Atlas v1.3.5 does not extend plans to unchanged dependents - verified 2026-10-27) |
-| Safety lint | Partly | Regex destructive gate + `destructive-approved` label. `atlas.hcl` `skip { drop_table }` also works in CE (verified) but is not enabled: it desyncs `schema.sql` from migrations |
-| Drift: tables/indexes/enums | Yes, verified | `atlas schema diff` in the daily probe |
-| Drift: functions/views/triggers | Approximated | Probe-branch replay + definition compare + ghost check; name-level, ignore-listed |
-| Alerting | Crude | Scheduled workflow + `schema-drift` issue; not managed monitoring |
-| Dependency graph, native lint, Schema Monitoring | Not closable in CE | Atlas Pro ($9/dev/mo + $59/project/mo Pipelines + $39/db/mo Monitoring) |
-
-Decision gate: stay on CE while the object count and ordering discipline are
-manageable; evaluate Pro when the dependency graph, audit-grade lint or
-continuous monitoring become requirements. The deck's concrete trial is a
-`numeric(10,2)` -> `numeric(14,4)` widening under a dependent view + function,
-run through both paths on a Lakebase branch.
-
 ## GitHub configuration (Settings)
 
-Repository variables (Actions -> Variables; SP client IDs, kept for the OIDC switchover):
+Repository variables (Actions -> Variables):
 
-| Variable | Value |
+| Variable | Purpose |
 | --- | --- |
-| SP_CI_CLIENT_ID | SP-CI application ID (PR validation + branch GC) |
-| SP_CD_CLIENT_ID | SP-CD application ID (CD promotion) |
-| SP_MONITOR_CLIENT_ID | SP-MONITOR application ID (drift monitor) |
+| `ATLAS_EDITION` | `pro` or `ce` in CI; unset defaults to `ce`. Pro needs `ATLAS_TOKEN`. |
+| `SP_CI_CLIENT_ID` | SP-CI application ID (PR validation + branch GC; OIDC switchover) |
+| `SP_CD_CLIENT_ID` | SP-CD application ID (CD promotion) |
+| `SP_MONITOR_CLIENT_ID` | SP-MONITOR application ID (drift monitor) |
 
 Repository secrets:
 
 | Secret | Example |
 | --- | --- |
-| DATABRICKS_HOST | https://dbc-xxxxxxxx.cloud.databricks.com |
-| DATABRICKS_TOKEN | PAT or SP token with Lakebase access |
-| LAKEBASE_PROJECT | core-app-db |
-| DATABRICKS_PG_USER | the Lakebase Postgres role that runs the pipeline |
+| `DATABRICKS_HOST` | https://dbc-xxxxxxxx.cloud.databricks.com |
+| `DATABRICKS_TOKEN` | PAT or SP token with Lakebase access |
+| `LAKEBASE_PROJECT` | core-app-db |
+| `DATABRICKS_PG_USER` | the Lakebase Postgres role that runs the pipeline |
+| `ATLAS_TOKEN` | Atlas Cloud API token (portal.ariga.io; the CLI session token is NOT accepted, verified live) |
 
-Auth today is the static `DATABRICKS_TOKEN`. The OIDC switchover (3 SPs,
-federation policies, per-workspace subject strings) is fully specced and
-stubbed in [docs/IDENTITIES.md](docs/IDENTITIES.md); it is blocked because
-federation policies are account-level API, out of Free Edition reach.
+Auth today is the static `DATABRICKS_TOKEN`; the database password is still self-minted per run (below). The OIDC switchover (3 SPs, federation policies, subject strings) is specced in [docs/IDENTITIES.md](docs/IDENTITIES.md); blocked because federation policies are account-level API, beyond Free Edition.
 
-## Atlas edition switch (CE <-> Pro)
+### Pro in CI: official apply + Lakebase credentials
 
-Atlas is one binary: Pro features unlock with `ATLAS_TOKEN`. The switch is
-two repo settings, nothing else changes:
-
-| Setting | `ce` (today) | `pro` |
-| --- | --- | --- |
-| `ATLAS_EDITION` (Actions variable) | default | lint gate ON, object-aware drift diff ON |
-| `ATLAS_TOKEN` (Actions secret) | unused | Atlas Cloud API token |
-
-What Pro adds to the pipeline (all verified live on the trial):
-
-| Feature | Command | Where |
-| --- | --- | --- |
-| Native lint analyzers | `atlas migrate lint --latest` | `gen_migration.sh --check` rides the plan check on every PR |
-| Out-of-band integrity check | `atlas migrate validate` | `apply_migrations_atlas.sh` before every apply (works in CE too) |
-| Rollback with pre-revert checks | `atlas migrate down` | `scripts/rollback_migration.sh` (dev branches; production uses the recovery branch) |
-| Object-aware drift diff | `atlas schema diff` over `schema.sql + db/objects` | `check_drift.sh` Pro mode: no probe branch, no replay, covers functions/procedures/views/triggers + ghosts |
-
-Note: CI Pro mode needs an Atlas Cloud API token (Settings -> API Tokens at
-portal.ariga.io). The CLI login session token is NOT accepted as
-`ATLAS_TOKEN` (verified live). Until that token is added, keep
-`ATLAS_EDITION=ce`; locally, an `atlas login` session unlocks everything.
-
-### Pro track: official apply + Lakebase credentials
-
-The Pro track uses the official `ariga/atlas-action/migrate/apply@v1`. It
-needs a Postgres URL; Lakebase has no static DB URL by design. The
-established pattern (Databricks docs: [external apps connect via
-API](https://docs.databricks.com/aws/en/oltp/projects/external-apps-manual-api),
-[OAuth M2M](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-m2m)):
+The Pro CD path uses the official `ariga/atlas-action/migrate/apply@v1`. It needs a Postgres URL; Lakebase has no static DB URL. The established pattern (Databricks docs: [external apps via API](https://docs.databricks.com/aws/en/oltp/projects/external-apps-manual-api), [OAuth M2M](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-m2m)):
 
 ```
 SP OAuth secret (up to 730 days, workspace access on)
   -> M2M client-credentials flow: 1-hour workspace token
   -> generate-database-credential: 1-hour Postgres credential
-  -> username = SP client id = that SP's Postgres role (app_pipeline member)
+  -> username = SP client id = that SP's Postgres role
 ```
 
-The long-lived artifact is the SP secret only; the database password is
-self-minted per run. The CD workflow already mints the credential in a
-pre-step (`Mint Lakebase database credential`) and hands the URL to the
-action. Today the workspace token mints for its own identity; once the SP
-OAuth secrets are generated (one console click per SP, steps in
-[docs/IDENTITIES.md](docs/IDENTITIES.md)) the same steps run as SP-CI /
-SP-CD / SP-MONITOR and no static `DATABRICKS_TOKEN` is used. The OIDC
-federation switchover requires account-level API, unavailable on Free
-Edition; OAuth M2M secrets work at workspace level on Free Edition, so M2M
-is the implemented pattern.
-
-Platform facts (verified live): Lakebase Postgres runs **PostgreSQL 17.11**
-(dev containers pinned to `postgres:17` to match). `cd-promotion` accepts a
-manual dispatch with a rehearsal-branch target to test the Pro apply path
-without production; manual runs are hard-refused when the target is
-`production`.
+The long-lived artifact is the SP secret only. The CD workflow mints the credential in a pre-step and hands the URL to the action. `cd-promotion` accepts a manual dispatch with a rehearsal-branch target to test the apply path without production; manual runs are hard-refused when the target is `production`.
 
 ### Alignment with the official Atlas GitHub Actions guide
 
@@ -455,40 +266,27 @@ Source: [atlasgo.io/guides/ci-platforms/github-versioned](https://atlasgo.io/gui
 
 | Guide step | This repo | Why |
 | --- | --- | --- |
-| Bot token as `ATLAS_CLOUD_TOKEN` secret | done (repo secret; token value lives only in the ignored `.env.py`) | official naming kept |
-| `ariga/setup-atlas@v0` with `cloud-token` | `pr-validation.yml`, Pro-gated; grant cached for offline access | official install + auth path in CI |
-| `ariga/atlas-action/migrate/lint@v1` | `pr-validation.yml`, Pro-gated, `dir-name: lakebase-cicd-poc`, dev-database = postgres:17 service container (matches Lakebase PG 17.11) | native lint report posted on the PR by Atlas Cloud |
-| `migrate/push` to the Schema Registry on merge | `cd-promotion.yml`, Pro-gated; registry repo: [pragmatix.atlasgo.cloud/dirs/4294967296](https://pragmatix.atlasgo.cloud/dirs/4294967296) | official step 2 (cloud versioning of the dir) |
-| `ariga/atlas-action/migrate/apply@v1` | `cd-promotion.yml`, Pro-gated, against a 1-hour minted Lakebase credential (see "Pro track: official apply" above); CE keeps `apply_migrations_atlas.sh` | Lakebase has no static `DB_URL`: the credential is minted per run by the documented SP OAuth pattern |
-| Local `docker://postgres` dev-database | Lakebase template0 scratch DB inside the branch | no Docker dependency; dev DB is the same engine/version as production |
+| Bot token as `ATLAS_CLOUD_TOKEN` secret | done (value lives only in the ignored `.env.py`) | official naming kept |
+| `ariga/setup-atlas@v0` with `cloud-token` | `pr-validation.yml`, Pro-gated | official install + auth path |
+| `ariga/atlas-action/migrate/lint@v1` | `pr-validation.yml`, Pro-gated; dev-database = postgres:17 service container | native lint report on the PR |
+| `migrate/push` to the Schema Registry on merge | `cd-promotion.yml`, Pro-gated | cloud versioning of the dir |
+| `ariga/atlas-action/migrate/apply@v1` | `cd-promotion.yml`, against a minted 1-hour credential | no static DB URL |
+| Local `docker://postgres` dev-database | Lakebase `template0` scratch inside the branch | same engine/version as production, no Docker |
 
 ## Sources
 
-- [Atlas Community Edition feature matrix](https://atlasgo.io/community-edition)
 - [Atlas versioned migrations (diff, apply, atlas_schema_revisions)](https://atlasgo.io/versioned/migrations)
-- [Atlas pricing (Pro seats, Pipelines)](https://atlasgo.io/pricing)
-- [Lakebase Cookbook: Branching CI/CD reference](https://lakebase-cookbook.com/docs/examples/branching-cicd/)
-- [Databricks Docs: Manage branches (TTL model, 30-day max)](https://docs.databricks.com/aws/en/oltp/projects/manage-branches)
-- [Databricks Docs: Typical project setup with Asset Bundles (replace_existing, implicit resources)](https://docs.databricks.com/aws/en/oltp/projects/dabs-typical-project)
+- [Atlas pricing (Pro seats, Pipelines, Monitoring)](https://atlasgo.io/pricing)
+- [Databricks Docs: Manage branches (TTL model)](https://docs.databricks.com/aws/en/oltp/projects/manage-branches)
 - [Databricks Docs: Lakebase authentication (generate-database-credential)](https://docs.databricks.com/aws/en/oltp/projects/authentication)
-- [Databricks Blog: Branching databases like code (Glaspoort, per-PR flow)](https://www.databricks.com/blog/branching-databases-code-cicd-pattern-lakebase-production-glaspoort)
+- [Databricks Blog: Branching databases like code](https://www.databricks.com/blog/branching-databases-code-cicd-pattern-lakebase-production-glaspoort)
 
 ## Open items
-
-Closed since this section was written: production test split (smoke vs
-integration), CI fail-on-drift (no auto-commit), explicit baseline,
-three-dot merge-base diffs, pre-deploy recovery branch in CD, pinned Atlas
-version, credential masking, bundle targets trimmed to prod (dev/qa/stage
-stub targets removed; re-add when those workspaces exist), SP designations +
-Lakebase roles + app_pipeline ownership grants
-(docs/IDENTITIES.md).
-Decisions taken: GC stays weekly-only, dev-branch TTL stays 7 days,
-ownership review skipped for the POC.
 
 | # | Change | Open item |
 | --- | --- | --- |
 | 1 | Ownership | Assign CODEOWNERS to a team instead of individuals; mark the `production` Lakebase branch protected (skipped for this POC by decision) |
-| 2 | OIDC credentials | Switch the static `DATABRICKS_TOKEN` to workload federation with the three designated SPs (SP-CI, SP-CD, SP-MONITOR). SPs, Lakebase roles and Postgres grants are DONE (docs/IDENTITIES.md); blocked on federation policies, which need account-level API access beyond Free Edition. The runner error already gave us the exact subject strings |
+| 2 | OIDC credentials | Switch the static `DATABRICKS_TOKEN` to workload federation with the three designated SPs (SP-CI, SP-CD, SP-MONITOR). SPs, Lakebase roles and Postgres grants are DONE (docs/IDENTITIES.md); blocked on federation policies, which need account-level API beyond Free Edition |
+| 3 | Schema Monitoring | Register production in Atlas Cloud after licensing (manual, post-license) |
 
-Carried from v1, still open: RBAC as code, AI-impact review (AI Gateway),
-multi-environment promotion with the platform team.
+Carried from v1, still open: RBAC as code, AI-impact review (AI Gateway), multi-environment promotion with the platform team.
