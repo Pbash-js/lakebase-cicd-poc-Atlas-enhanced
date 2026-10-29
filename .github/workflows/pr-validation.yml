@@ -128,6 +128,26 @@ jobs:
       - name: Install Python deps
         run: pip3 install "psycopg[binary]==3.2.9" "pytest==8.3.5"
 
+      # Environment-aware rehearsal: the PR's BASE branch selects the workspace
+      # whose baseline the rehearsal forks from (dev->Dev, qa->QA, release/*->Stage,
+      # prod|main->Prod). Workspace projects are repo variables set when the
+      # workspace is provisioned; until then every PR rehearses against the prod
+      # project (the only live one) with a notice.
+      - name: Resolve rehearsal workspace from base branch
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          case "$BASE" in
+            dev)        P="${{ vars.LAKEBASE_PROJECT_DEV || secrets.LAKEBASE_PROJECT }}" ;;
+            qa)         P="${{ vars.LAKEBASE_PROJECT_QA || secrets.LAKEBASE_PROJECT }}" ;;
+            release/*)  P="${{ vars.LAKEBASE_PROJECT_STAGE || secrets.LAKEBASE_PROJECT }}" ;;
+            *)          P="${{ secrets.LAKEBASE_PROJECT }}" ;;
+          esac
+          if [ "$P" = "${{ secrets.LAKEBASE_PROJECT }}" ] && [ "$BASE" != "prod" ] && [ "$BASE" != "main" ]; then
+            echo "::notice::base '$BASE': its workspace project is not provisioned — rehearsing against the prod project baseline"
+          fi
+          echo "LAKEBASE_PROJECT=$P" >> "$GITHUB_ENV"
+
       - name: Recreate ephemeral PR branch (fresh fork of CURRENT production every run)
         env:
           PR_ID: ${{ github.event.pull_request.number }}

@@ -1,20 +1,61 @@
 bundle:
   name: lakebase-cicd-poc
 
-# Single live target: prod. (dev/qa/stage stub targets were removed by the
-# ponytail audit; re-add them when those workspaces and their Lakebase
-# projects exist. Pattern per target: declare the branch + primary endpoint
-# with replace_existing: true — DABs cannot adopt an existing postgres_project,
-# so the project is never declared in the bundle; its id is recorded here.)
+# One bundle target per workspace; the CD workflow maps the git branch to the
+# target (dev -> dev, qa -> qa, release/* -> stage, prod -> prod).
+# Pattern per target: declare the branch + primary endpoint with
+# replace_existing: true — DABs cannot adopt an existing postgres_project, so
+# the project is never declared in the bundle; its id is recorded here.
 #
 # Workspace isolation model: each target is a SEPARATE Databricks workspace
 # (own catalog, own identity, own secrets, own Lakebase project) — the same
-# commit travels Dev -> Prod through the identical pipeline.
+# commit travels dev -> qa -> stage -> prod through the identical pipeline.
+#
+# PLACEHOLDER PROJECT IDS: qa/stage carry placeholder ids. When a workspace is
+# provisioned, replace the placeholder here AND set the matching repo variable
+# (LAKEBASE_PROJECT_QA / LAKEBASE_PROJECT_STAGE) — the CD workflow deploys a
+# workspace only when its variable is set, so placeholders never deploy.
 
 targets:
   dev:
     mode: development
     default: true
+
+  qa:
+    mode: production
+    resources:
+      postgres_branches:
+        qa_branch:
+          parent: projects/core-app-db   # PLACEHOLDER: replace with the QA workspace project id
+          branch_id: production
+          no_expiry: true
+          replace_existing: true
+      postgres_endpoints:
+        qa_endpoint:
+          parent: projects/core-app-db/branches/production   # PLACEHOLDER: same replacement
+          endpoint_id: primary
+          endpoint_type: ENDPOINT_TYPE_READ_WRITE
+          autoscaling_limit_min_cu: 1
+          autoscaling_limit_max_cu: 1
+          replace_existing: true
+
+  stage:
+    mode: production
+    resources:
+      postgres_branches:
+        stage_branch:
+          parent: projects/core-app-db   # PLACEHOLDER: replace with the Stage workspace project id
+          branch_id: production
+          no_expiry: true
+          replace_existing: true
+      postgres_endpoints:
+        stage_endpoint:
+          parent: projects/core-app-db/branches/production   # PLACEHOLDER: same replacement
+          endpoint_id: primary
+          endpoint_type: ENDPOINT_TYPE_READ_WRITE
+          autoscaling_limit_min_cu: 1
+          autoscaling_limit_max_cu: 1
+          replace_existing: true
 
   prod:
     mode: production
