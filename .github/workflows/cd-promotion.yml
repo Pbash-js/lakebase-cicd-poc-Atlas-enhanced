@@ -133,7 +133,7 @@ jobs:
           TOK=$(lb_token "$EP")
           echo "::add-mask::${TOK}"
           ENC=$(python3 -c "import urllib.parse;print(urllib.parse.quote('${{ secrets.DATABRICKS_PG_USER }}', safe=''))")
-          echo "url=postgres://${ENC}:***@${HOST}:5432/databricks_postgres?sslmode=require" >> "$GITHUB_OUTPUT"
+          echo "url=postgres://${ENC}:${TOK}@${HOST}:5432/databricks_postgres?sslmode=require" >> "$GITHUB_OUTPUT"
 
       - name: Pre-deploy recovery branch (PITR fork of the environment database)
         if: env.TARGET_BRANCH == 'production'
