@@ -62,7 +62,7 @@ def main() -> int:
 
     if os.environ.get("GH_OUTPUTS") == "1":
         # plain, non-secret descriptors for GITHUB_OUTPUT (job-level use)
-        for k, v in (
+        pairs = [
             ("env_name", name),
             ("deploy_env", e["deploy_env"]),
             ("host_name", e["host"]),
@@ -70,7 +70,13 @@ def main() -> int:
             ("project", e["project"]),
             ("database", e["database"]),
             ("bundle_target", e["bundle_target"]),
-        ):
+        ]
+        out_path = os.environ.get("GITHUB_OUTPUT")
+        if out_path:
+            with open(out_path, "a", encoding="utf-8") as out:
+                for k, v in pairs:
+                    out.write(f"{k}={v}\n")
+        for k, v in pairs:
             print(f"{k}={v}")
     return 0
 
