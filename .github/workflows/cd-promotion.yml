@@ -2,7 +2,7 @@ name: CD Promotion — branch-driven workspace promotion
 on:
   push:
     branches: [dev, qa, "release/**", prod]
-    paths: ["db/migrations/**", "db/schema/**", "db/objects/**", "databricks.yml", "config/**", ".github/**"]
+    paths: ["db/migrations/**", "db/schema/**", "db/objects/**", "databricks.yml", "config/**", "scripts/**", ".github/**"]
   workflow_dispatch:
     inputs:
       target_branch:
