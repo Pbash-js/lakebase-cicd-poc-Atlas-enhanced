@@ -2,45 +2,74 @@ name: CD Promotion — branch-driven workspace promotion
 on:
   push:
     branches: [dev, qa, "release/**", prod]
-    paths: ["db/migrations/**", "db/schema/**", "db/objects/**", "databricks.yml", ".github/workflows/**"]
+    paths: ["db/migrations/**", "db/schema/**", "db/objects/**", "databricks.yml", "config/**", "scripts/**", ".github/**"]
   workflow_dispatch:
     inputs:
       target_branch:
-        description: "Rehearsal branch to deploy to instead of the workspace baseline (Atlas-native path test). NEVER a baseline name."
+        description: "Rehearsal branch to deploy to instead of the environment database (Atlas-native path test). NEVER an environment database name."
         required: false
         default: ""
 
 concurrency:
   group: cd-${{ github.ref_name }}
-  cancel-in-progress: false   # serialize per-workspace promotions — never race
+  cancel-in-progress: false   # serialize per-environment promotions — never race
 
 jobs:
-  promote:
+  resolve:
     runs-on: ubuntu-latest
-    # deploy gate: prod requires the production environment reviewers;
-    # stage requires the stage environment reviewers. dev/qa deploy on merge.
-    environment: ${{ github.ref_name == 'prod' && 'production' || (startsWith(github.ref_name, 'release/') && 'stage' || '') }}
+    outputs:
+      env_name: ${{ steps.res.outputs.env_name }}
+      deploy_env: ${{ steps.res.outputs.deploy_env }}
+      host_name: ${{ steps.res.outputs.host_name }}
+      token_name: ${{ steps.res.outputs.token_name }}
+      project: ${{ steps.res.outputs.project }}
+      database: ${{ steps.res.outputs.database }}
+      bundle_target: ${{ steps.res.outputs.bundle_target }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PyYAML
+        run: pip3 install "pyyaml==6.0.2"
+      - name: Resolve environment from config/environments.yml
+        id: res
+        env:
+          GH_OUTPUTS: "1"
+          # every host/token secret pair the config may reference; add one
+          # line per new workspace (see config/environments.yml header)
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: python3 scripts/resolve_env.py "$GITHUB_REF_NAME" cd
+
+  promote:
+    needs: resolve
+    runs-on: ubuntu-latest
+    # deploy gate: the GitHub environment named in config/environments.yml
+    # ("" for dev/qa = deploy on merge; stage/production carry required reviewers)
+    environment: ${{ needs.resolve.outputs.deploy_env }}
     permissions:
       contents: read
+    env:
+      WORKSPACE: ${{ needs.resolve.outputs.env_name }}
+      LAKEBASE_PROJECT: ${{ needs.resolve.outputs.project }}
+      TARGET_BRANCH: ${{ needs.resolve.outputs.database }}
+      BUNDLE_TARGET: ${{ needs.resolve.outputs.bundle_target }}
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
-      # Branch -> workspace map (single source of truth; mirrors DESIGN.md):
-      #   dev          -> Dev workspace,   bundle target dev
-      #   qa           -> QA workspace,    bundle target qa
-      #   release/x.y  -> Stage workspace, bundle target stage
-      #   prod         -> Prod workspace,  bundle target prod
-      - name: Resolve workspace from branch
+      # Select the workspace credentials BY NAME (config stores secret names,
+      # not values). With one workspace all rows resolve to the same pair;
+      # per-workspace pairs activate by adding the secrets + config edit.
+      - name: Select workspace credentials
         run: |
-          case "$GITHUB_REF_NAME" in
-            dev)          WS=dev;    TARGET=dev ;;
-            qa)           WS=qa;     TARGET=qa ;;
-            release/*)    WS=stage;  TARGET=stage ;;
-            prod)         WS=prod;   TARGET=prod ;;
-            *) echo "::error::unmapped branch $GITHUB_REF_NAME"; exit 1 ;;
-          esac
-          echo "WORKSPACE=$WS" >> "$GITHUB_ENV"
-          echo "BUNDLE_TARGET=$TARGET" >> "$GITHUB_ENV"
+          HOST="$(printenv "${{ needs.resolve.outputs.host_name }}")"
+          TOKEN="$(printenv "${{ needs.resolve.outputs.token_name }}")"
+          if [ -z "$HOST" ] || [ -z "$TOKEN" ]; then
+            echo "::error::workspace credentials for $WORKSPACE not available (host=${{ needs.resolve.outputs.host_name }})"
+            exit 1
+          fi
+          echo "DATABRICKS_HOST=$HOST" >> "$GITHUB_ENV"
+          echo "DATABRICKS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
       # Pro mode: official Atlas install with the bot token (grant cached for
       # offline access). The script steps use this binary via ATLAS_BIN.
@@ -50,18 +79,14 @@ jobs:
         with:
           cloud-token: ${{ secrets.ATLAS_CLOUD_TOKEN }}
 
-      - name: Resolve target branch
+      - name: Validate target branch input (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
         env:
           TB_IN: ${{ github.event.inputs.target_branch }}   # never interpolate inputs into shell
         run: |
           TB="$TB_IN"
-          if [ -n "$TB" ] && ! echo "$TB" | grep -qE '^[a-z][a-z0-9-]{0,62}$'; then
-            echo "::error::invalid target_branch (must match ^[a-z][a-z0-9-]{0,62}$)"; exit 1
-          fi
-          # push events deploy to the workspace's Lakebase baseline branch
-          if [ -z "$TB" ]; then TB="production"; fi
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$TB" = "production" ]; then
-            echo "::error::manual runs never touch a workspace baseline — pass a rehearsal branch"
+          if [ -z "$TB" ] || ! echo "$TB" | grep -qE '^[a-z][a-z0-9-]{0,62}$'; then
+            echo "::error::manual runs must pass a rehearsal branch (^[a-z][a-z0-9-]{0,62}$) — never an environment database"
             exit 1
           fi
           echo "TARGET_BRANCH=$TB" >> "$GITHUB_ENV"
@@ -74,30 +99,8 @@ jobs:
       - name: Install Python deps
         run: pip3 install "psycopg[binary]==3.2.9" "pytest==8.3.5"
 
-      # Workspace Lakebase project: LAKEBASE_PROJECT (prod) is a secret;
-      # the dev/qa/stage projects are repo variables, set when those
-      # workspaces are provisioned. A placeholder skips the workspace's
-      # Lakebase steps with a notice instead of failing the pipeline.
-      - name: Resolve workspace Lakebase project
-        run: |
-          case "$WORKSPACE" in
-            prod)  P="${{ secrets.LAKEBASE_PROJECT }}" ;;
-            dev)   P="${{ vars.LAKEBASE_PROJECT_DEV }}" ;;
-            qa)    P="${{ vars.LAKEBASE_PROJECT_QA }}" ;;
-            stage) P="${{ vars.LAKEBASE_PROJECT_STAGE }}" ;;
-          esac
-          if [ -z "$P" ]; then
-            echo "::notice::$WORKSPACE workspace Lakebase project not provisioned yet — Lakebase steps will be skipped"
-            echo "PROJECT=" >> "$GITHUB_ENV"
-          else
-            echo "PROJECT=$P" >> "$GITHUB_ENV"
-          fi
-
       - name: Deploy Infrastructure Assets via DABs
-        if: env.PROJECT != ''
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
           ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
         run: databricks bundle deploy -t "$BUNDLE_TARGET"
@@ -121,11 +124,8 @@ jobs:
       # credential, username = SP client id = the SP's Postgres role.
       - name: Mint Lakebase database credential (1-hour OAuth)
         id: cred
-        if: env.PROJECT != ''
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-          LAKEBASE_PROJECT: ${{ env.PROJECT }}
+          DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
         run: |
           . scripts/lib.sh
           EP="projects/${LAKEBASE_PROJECT}/branches/${TARGET_BRANCH}/endpoints/primary"
@@ -133,16 +133,13 @@ jobs:
           TOK=$(lb_token "$EP")
           echo "::add-mask::${TOK}"
           ENC=$(python3 -c "import urllib.parse;print(urllib.parse.quote('${{ secrets.DATABRICKS_PG_USER }}', safe=''))")
-          echo "url=postgres://${ENC}:***@${HOST}:5432/databricks_postgres?sslmode=require" >> "$GITHUB_OUTPUT"
+          echo "url=postgres://${ENC}:${TOK}@${HOST}:5432/databricks_postgres?sslmode=require" >> "$GITHUB_OUTPUT"
 
-      - name: Pre-deploy recovery branch (PITR fork of the workspace baseline)
-        if: env.PROJECT != '' && env.TARGET_BRANCH == 'production'
+      - name: Pre-deploy recovery branch (PITR fork of the environment database)
+        if: env.TARGET_BRANCH == 'production'
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
           ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
-          LAKEBASE_PROJECT: ${{ env.PROJECT }}
         run: |
           . scripts/lib.sh
           RB="recovery-${{ github.run_id }}"
@@ -156,7 +153,7 @@ jobs:
       # Pro track: the OFFICIAL Atlas apply action against the minted
       # credential — Atlas owns the deployment, not our wrapper.
       - name: Apply migrations via the official Atlas action (Pro track)
-        if: env.PROJECT != '' && vars.ATLAS_EDITION == 'pro'
+        if: vars.ATLAS_EDITION == 'pro'
         uses: ariga/atlas-action/migrate/apply@v1
         with:
           dir: 'file://db/migrations'
@@ -164,14 +161,10 @@ jobs:
           tx-mode: all   # one transaction for the whole pending batch (CE script parity)
 
       - name: Replay objects + run smoke tests (Pro track)
-        if: env.PROJECT != '' && vars.ATLAS_EDITION == 'pro'
+        if: vars.ATLAS_EDITION == 'pro'
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           ATLAS_EDITION: pro
-          LAKEBASE_PROJECT: ${{ env.PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
-          TARGET_BRANCH: ${{ env.TARGET_BRANCH }}
           ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
           SKIP_MIGRATIONS: "1"
         run: ./scripts/branch_test.sh
@@ -179,13 +172,9 @@ jobs:
       # CE track (fallback): our script — same ledger, --tx-mode all,
       # objects replay, tests, one entrypoint.
       - name: Apply migrations + objects (CE track)
-        if: env.PROJECT != '' && vars.ATLAS_EDITION != 'pro'
+        if: vars.ATLAS_EDITION != 'pro'
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           ATLAS_EDITION: ce
-          LAKEBASE_PROJECT: ${{ env.PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
-          TARGET_BRANCH: ${{ env.TARGET_BRANCH }}
           ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
         run: ./scripts/branch_test.sh
