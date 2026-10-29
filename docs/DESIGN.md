@@ -57,7 +57,7 @@ Rules:
 - **One live release line.** `release/x.y` is cut from `qa` when a version is ready for Stage parity, promoted to `prod`, and retired when the next line is cut. Baselines never take direct commits; all changes arrive by PR.
 - **Hotfix propagation is merge-down.** After the prod fix lands (`hotfix/* -> prod`), merge-down PRs carry it back: `prod -> release/x.y -> qa -> dev`. The exactly-once ledger makes each downward merge apply only what that workspace lacks.
 - **Two approval controls.** Branch protection approves the code (per-baseline review counts + required checks); GitHub environments approve the deployment (`stage` and `production` carry required reviewers). A merge never deploys by itself.
-- **Workspace projects.** Each workspace's Lakebase project id lives in the repo variables `LAKEBASE_PROJECT_DEV/QA/STAGE` (prod: the `LAKEBASE_PROJECT` secret). Until a workspace is provisioned, its variable is unset and its CD run skips the Lakebase steps with a notice; PR rehearsal falls back to the prod project baseline.
+- **Environment map is one file.** `config/environments.yml` is the single source of truth: git branch -> workspace credentials (by secret name), Lakebase project, database (Lakebase branch), bundle target and deploy gate. Every workflow resolves through it; moving an environment to another workspace or database edits that file only. Current topology (Free Edition): one workspace, one project, one long-lived Lakebase branch per environment (`env-dev`, `env-qa`, `env-stage`, `production`). PR rehearsal forks from the base branch's environment database (non-baseline bases fall back to prod).
 
 ## 3. Repository structure
 
