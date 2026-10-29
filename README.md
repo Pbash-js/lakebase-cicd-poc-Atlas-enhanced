@@ -36,6 +36,7 @@ Tell: a Pro run prints `▶ Pro declarative: schema apply ...`; a CE run prints 
 | You want to... | Do this | Read |
 | --- | --- | --- |
 | Day-zero setup on a fresh clone | `./scripts/init_project.sh` | [Day zero](#day-zero) |
+| Start a change | `feat/*` from `dev`; `hotfix/*` from `prod` | [Branch model](#branch-model) |
 | Make a schema change | Edit `db/schema/*.sql`, `branch_test.sh`, then `gen_migration.sh` | [The loop](#the-loop-test-first-version-last) |
 | Make a code-object change | Edit the file under `db/objects/<layer>/` | [The loop](#the-loop-test-first-version-last) |
 | Rename/drop an object | Add a retirement line (the deploy tells you exactly what) | [Retirements](#retirements-drops-and-signature-changes) |
@@ -43,6 +44,19 @@ Tell: a Pro run prints `▶ Pro declarative: schema apply ...`; a CE run prints 
 | Know what CE cannot do | Limitations table | [CE fallback](#ce-fallback-limitations) |
 | Configure repo settings | Secrets/variables tables | [GitHub configuration](#github-configuration-settings) |
 | Investigate a `schema-drift` issue | Run the probe manually against any branch | [Drift monitor](#drift-monitor-scheduled) |
+
+## Branch model
+
+Four baseline branches map 1:1 to the four workspaces. All changes arrive by PR; baselines never take direct commits.
+
+| Baseline | Workspace | Promote from | Deploy gate |
+| --- | --- | --- | --- |
+| `dev` (default) | Dev | `feat/*` branches | merge (CI required) |
+| `qa` | QA | PR from `dev` | merge (CI required) |
+| `release/x.y` | Stage | PR from `qa`, CODEOWNERS | `stage` environment reviewers |
+| `prod` | Prod | PR from `release/x.y` | `production` environment reviewers |
+
+Rules: `feat/*` from `dev`; `hotfix/*` from `prod` (the branch whose state production runs); one live `release/x.y` at a time (cut from `qa`, promoted to `prod`, retired on the next cut); hotfixes propagate back down by merge PRs `prod -> release/x.y -> qa -> dev` (the exactly-once ledger makes each apply only what that workspace lacks). Design rationale: [docs/DESIGN.md](docs/DESIGN.md), section 2.
 
 ## What each file does
 
