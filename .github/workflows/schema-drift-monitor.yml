@@ -36,7 +36,7 @@ jobs:
       - name: Resolve prod environment from config
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_CI }}   # resolver checks availability by NAME; monitor holds only the CI token
         run: |
           pip3 install -q "pyyaml==6.0.2"
           python3 scripts/resolve_env.py prod cd
@@ -44,6 +44,12 @@ jobs:
       - name: Run drift probe (production vs Git)
         id: probe
         env:
+          # the probe calls the databricks CLI: it needs the credentials the
+          # resolve step resolved (this was missing and every run failed with
+          # 'default auth: cannot configure default credentials')
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_CI }}
+          SOURCE_BRANCH: ${{ env.TARGET_BRANCH }}   # the prod environment's database, from config
           ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
           ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
@@ -91,18 +97,29 @@ jobs:
             gh issue create --title "$TITLE" --body-file body.md --label schema-drift
           fi
 
-      - name: Probe error (not drift), open the issue too
+      - name: Probe error (not drift), open or update one issue
         if: steps.probe.outputs.drift == 'true' && steps.probe.outputs.kind == 'error'
         env:
           GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           TITLE="Schema drift probe FAILED (auth/connectivity/replay error, not drift)"
-          gh issue create --title "$TITLE" \
-            --body "The probe errored instead of measuring. Check workflow logs." \
-            --label probe-error || true
+          {
+            echo "The drift probe errored instead of measuring. This is NOT drift."
+            echo ""
+            echo "Run: $RUN_URL"
+            echo ""
+            echo "One issue per probe error is reused: this entry is the latest failing run."
+          } > body.md
+          NUM=$(gh issue list --label probe-error --state open --json number --jq '.[0].number' || echo "")
+          if [ -n "$NUM" ]; then
+            gh issue edit "$NUM" --title "$TITLE" --body-file body.md
+          else
+            gh issue create --title "$TITLE" --body-file body.md --label probe-error
+          fi
 
       - name: Fail the run on drift
-        if: steps.probe.outputs.drift == 'true'
+        if: steps.probe.outputs.drift == 'true' && steps.probe.outputs.kind == 'drift'
         run: |
           echo "::error::drift detected between production and Git, see the schema-drift issue"
           exit 1
