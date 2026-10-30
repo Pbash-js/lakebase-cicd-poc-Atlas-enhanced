@@ -6,12 +6,12 @@ bundle:
 # Pattern per target: declare the branch + primary endpoint with
 # replace_existing: true — DABs cannot adopt an existing postgres_project, so
 # the project is never declared in the bundle; its id lives in
-# config/environments.yml (the single source of truth).
+# config/environments.json (the single source of truth).
 #
 # Current topology (Free Edition): one workspace, one project, one long-lived
 # Lakebase branch per environment (env-dev / env-qa / env-stage / production).
 # Moving an environment to its own workspace/project = edit
-# config/environments.yml; when that happens, update the matching target's
+# config/environments.json; when that happens, update the matching target's
 # branch parent here too.
 
 targets:

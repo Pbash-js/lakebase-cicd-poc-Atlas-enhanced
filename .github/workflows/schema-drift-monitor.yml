@@ -38,7 +38,6 @@ jobs:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_CI }}   # resolver checks availability by NAME; monitor holds only the CI token
         run: |
-          pip3 install -q "pyyaml==6.0.2"
           python3 scripts/resolve_env.py prod cd
 
       - name: Run drift probe (production vs Git)
