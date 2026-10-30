@@ -1,7 +1,7 @@
 name: PR Validation — Lakebase branch
 on:
   pull_request:
-    paths: ["db/migrations/**", "db/schema/**", "db/objects/**", "db/tests/**", "scripts/**", "databricks.yml", ".github/workflows/**"]
+    paths: ["db/migrations/**", "db/schema/**", "db/objects/**", "db/tests/**", "config/**", "scripts/**", "databricks.yml", ".github/workflows/**"]
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_CI }}   # PR jobs hold only the CI token; DATABRICKS_TOKEN is an environment secret (CD jobs only)
       LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
       DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
       ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
@@ -69,7 +69,7 @@ jobs:
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         run: |
           git fetch -q origin "${BASE}"
-          CHANGED=$(git --no-pager diff --no-renames --name-only "origin/${BASE}...HEAD" -- .github databricks.yml scripts)
+          CHANGED=$(git --no-pager diff --no-renames --name-only "origin/${BASE}...HEAD" -- .github config databricks.yml scripts)
           if [ -z "$CHANGED" ]; then
             echo "No infra/runner changes — gate passed"
             exit 0
@@ -78,7 +78,7 @@ jobs:
           case " $LABELS " in
             *" infra-approved "*) echo "infra-approved label present — gate passed"; exit 0;;
           esac
-          echo "::error::PR touches .github/, scripts/ or databricks.yml — second-pair-of-eyes rule: add the 'infra-approved' label after review"
+          echo "::error::PR touches .github/, config/, scripts/ or databricks.yml — second-pair-of-eyes rule: add the 'infra-approved' label after review"
           exit 1
 
       - name: Migration immutability gate (generated files are never edited)
@@ -135,7 +135,7 @@ jobs:
         env:
           BASE: ${{ github.base_ref }}
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_CI }}   # resolver checks availability by NAME; the PR job only has the CI token
         run: |
           python3 scripts/resolve_env.py "$BASE" rehearsal
 

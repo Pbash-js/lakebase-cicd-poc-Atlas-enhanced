@@ -17,6 +17,8 @@ concurrency:
 jobs:
   resolve:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       env_name: ${{ steps.res.outputs.env_name }}
       deploy_env: ${{ steps.res.outputs.deploy_env }}
@@ -29,18 +31,21 @@ jobs:
       - name: Resolve environment from config/environments.json
         id: res
         env:
-          GH_OUTPUTS: "1"
+          GH_OUTPUTS: "1"   # descriptor resolution only: no secrets needed here,
+          #                   so this job holds no Databricks credentials at all
           # every host/token secret pair the config may reference; add one
           # line per new workspace (see config/environments.json header)
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          # DATABRICKS_HOST / DATABRICKS_TOKEN are declared in the promote job
         run: python3 scripts/resolve_env.py "$GITHUB_REF_NAME" cd
 
   promote:
     needs: resolve
     runs-on: ubuntu-latest
-    # deploy gate: the GitHub environment named in config/environments.json
-    # ("" for dev/qa = deploy on merge; stage/production carry required reviewers)
+    # deploy gate: the GitHub environment named in config/environments.json.
+    # Every environment maps to a GitHub environment (dev/qa have none on
+    # purpose); stage/production carry required reviewers. The environment
+    # scoping is also what makes DATABRICKS_TOKEN an environment secret: only
+    # this job (never PR runs) can read the deploy-capable token.
     environment: ${{ needs.resolve.outputs.deploy_env }}
     permissions:
       contents: read
@@ -85,6 +90,18 @@ jobs:
             echo "::error::manual runs must pass a rehearsal branch (^[a-z][a-z0-9-]{0,62}$) — never an environment database"
             exit 1
           fi
+          # A manual run may name ONLY a throwaway rehearsal branch. The regex
+          # above accepts 'production' and every env-* database, so they are
+          # refused explicitly by NAME, from config (not a hardcoded list):
+          # environment databases deploy exclusively via push-triggered CD,
+          # which carries the branch-protection + environment approval gates.
+          BLOCKED=$(python3 -c "import json;print(' '.join(sorted({e['database'] for e in json.load(open('config/environments.json'))['environments'].values()})))")
+          for b in $BLOCKED; do
+            if [ "$TB" = "$b" ]; then
+              echo "::error::manual runs must not target '$b' (an environment database from config/environments.json) — pass a rehearsal branch instead"
+              exit 1
+            fi
+          done
           echo "TARGET_BRANCH=$TB" >> "$GITHUB_ENV"
 
       - name: Install Databricks CLI

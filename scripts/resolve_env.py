@@ -9,7 +9,8 @@ Usage: resolve_env.py <git-branch> [cd|rehearsal]
 
 Secret values are selected by NAME (the config stores secret names, not
 values): the caller must export every configured host/token secret as an env
-var before invoking this script.
+var before invoking this script — EXCEPT in job-output mode (GH_OUTPUTS=1),
+which resolves descriptors only and never requires credentials.
 
 Outputs (GitHub Actions):
   GITHUB_ENV    WORKSPACE, LAKEBASE_PROJECT, TARGET_BRANCH
@@ -45,9 +46,17 @@ def main() -> int:
         return 1
 
     e = cfg[name]
+    soft = os.environ.get("GH_OUTPUTS") == "1"
     if not os.environ.get(e["host"]) or not os.environ.get(e["token"]):
-        print(f"::error::secret '{e['host']}'/'{e['token']}' for environment '{name}' is not available to this workflow", file=sys.stderr)
-        return 1
+        if soft:
+            # Job-output mode (cd-promotion resolve): this job only resolves
+            # descriptors (deploy_env, secret NAMES, project, database); it
+            # holds no Databricks credentials. The deploy job re-resolves the
+            # values by name and hard-fails if they are empty.
+            print(f"::notice::secrets '{e['host']}'/'{e['token']}' for environment '{name}' not available to this job — descriptor resolution only; the deploy job selects the values by name", file=sys.stderr)
+        else:
+            print(f"::error::secret '{e['host']}'/'{e['token']}' for environment '{name}' is not available to this workflow", file=sys.stderr)
+            return 1
 
     with open(os.environ.get("GITHUB_ENV", os.devnull), "a", encoding="utf-8") as genv:
         genv.write(f"WORKSPACE={name}\n")
