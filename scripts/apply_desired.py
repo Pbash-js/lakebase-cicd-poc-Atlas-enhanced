@@ -16,13 +16,6 @@ import argparse, re, subprocess, sys
 
 import psycopg
 
-# Statements Atlas plans for Lakebase platform resources; not ours to police
-# (same filter as check_drift.sh Pro mode).
-NOISE = re.compile(r"(?im)^.*DROP EVENT TRIGGER .*(on_create|on_drop).*$\n?")
-# Atlas prefixes each statement with a `-- <verb> ...` comment line; strip the
-# comment line directly above a dropped statement too.
-COMMENT = re.compile(r"(?im)^-- .*$\n?")
-
 
 def plan(atlas, url, desired, dev_url, schemas, excludes) -> str:
     cmd = [atlas, "schema", "diff",

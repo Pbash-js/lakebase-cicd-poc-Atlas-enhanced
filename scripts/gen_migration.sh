@@ -42,12 +42,17 @@ for a in "$@"; do
 done
 
 
-# Desired state = db/schema/*.sql in a fixed order: schema.sql first (the
-# base), then the rest sorted. A single hard-coded schema.sql would silently
-# ignore every other file in db/schema (verified bug: AMSShared.sql invisible).
+# Desired state = db/schema/*.sql, built by build_desired.py (--schema-only):
+# ONE builder for every consumer (branch_test Pro path, check_drift 5a, this
+# freeze step). A single hard-coded schema.sql would silently ignore every
+# other file in db/schema (verified bug: AMSShared.sql invisible).
 build_desired() {
   _out="$1"
-  { cat "db/schema/schema.sql"; find db/schema -name '*.sql' ! -name 'schema.sql' -type f | LC_ALL=C sort | xargs -r cat; } > "$_out"
+  # python is a native Windows binary: an MSYS /tmp path would resolve to
+  # C:\tmp. Convert before handing it over (branch_test.sh uses repo-relative
+  # paths and never hits this).
+  _win="$_out"; command -v cygpath >/dev/null 2>&1 && _win=$(cygpath -m "$_out")
+  python scripts/build_desired.py --schema-only --out "$_win" >/dev/null
   [ -s "$_out" ] || { echo "✗ db/schema is empty" >&2; exit 2; }
 }
 
