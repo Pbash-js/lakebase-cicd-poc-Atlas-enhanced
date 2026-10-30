@@ -24,6 +24,12 @@
 # (CI: DATABRICKS_HOST + DATABRICKS_TOKEN; local: auth login).
 # LAKEBASE_PROJECT is required (prompted interactively, hard-failed in CI).
 set -euo pipefail
+# Exit contract (consumed by the CI plan check): 0 clean, 1 drift, 2 infra.
+# An unexpected failure (endpoint disabled/capacity, connection refused, auth,
+# checksum mismatch) must surface as 2, never 1: a bare failure under set -e
+# exits 1 and the workflow misreads it as schema drift, posting a bogus
+# "generate a migration" comment on an infra error (live-hit, PR #32).
+trap 'echo "✗ plan check failed on an infra error (not drift)" >&2; exit 2' ERR
 . "$(dirname "$0")/lib.sh"
 
 NAME="atlas_generated"
