@@ -83,7 +83,7 @@ if [ "${ATLAS_EDITION:-ce}" = "pro" ]; then
   # employee/employee_data were invisible to a hard-coded --schema public
   # (lb_schema_args = public + every CREATE SCHEMA in db/schema).
   PRO_SCHEMA_ARGS=()
-  while read -r _a; do [ -n "$_a" ] && PRO_SCHEMA_ARGS+=("$_a"); done < <(lb_schema_args)
+  while read -r _f _s; do [ -n "${_s:-}" ] && PRO_SCHEMA_ARGS+=("$_f" "$_s"); done < <(lb_schema_args)
   PRO_OUT=$("$ATLAS_BIN" schema diff \
     --from "$PROD_URL" \
     --to "file://${REPO}/.tmp_pro/desired.sql" \
