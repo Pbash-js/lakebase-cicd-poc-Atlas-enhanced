@@ -195,3 +195,5 @@ else
   echo "✓ generated (staged): $NEWEST"
   echo "  commit it with the schema edit: git add db && git commit"
 fi
+
+# (comment refresh: re-delivered push event after a lost event on PR #44 merge)
