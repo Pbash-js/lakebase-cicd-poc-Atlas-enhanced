@@ -69,6 +69,8 @@ The 4-workspace target (DEV/QA/STAGE/PROD, one Lakebase project and database nam
 4. Edit `databricks.yml`: each target's branch parent points at the new project.
 5. The Free Edition endpoint cap no longer applies at 4 workspaces; until then, keep concurrent active endpoints under ~3 (see operational notes).
 
+Temporary gate relaxation, in force during the single-owner POC (documented decision, audit 2026-10-30): `prod` branch protection requires 2 reviews but `enforce_admins` is false, and the repository admin merges with admin override. Before production cutover (step 1 above), restore the full gate: a second reviewer account, `enforce_admins: true`, and `prevent_self_review` on the `production` and `stage` environments. This relaxation is NOT carried into the 4-workspace topology; the checklist for removing it is part of that cutover.
+
 ### Operational notes (Free Edition constraints)
 
 - **Endpoint concurrency cap (~3 active).** Every Lakebase branch endpoint that is ACTIVE counts. Rehearsal fork endpoints stay ACTIVE after their CI run finishes. Before any CD wave, disable endpoints not needed for that wave (`update-endpoint ... spec.disabled {"spec":{"disabled":true}}`); production plus the one target environment is the minimum set. Disabled endpoints wake on first connection.

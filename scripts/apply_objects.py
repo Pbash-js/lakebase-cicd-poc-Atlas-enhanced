@@ -34,7 +34,10 @@ def load_retirements(root: Path):
     """One JSON object per line: {"stmt", "reason", "requested_in"?}.
 
     STRICT whitelist on stmt: only `DROP <VIEW|FUNCTION|PROCEDURE|TRIGGER|TYPE>
-    IF EXISTS ...` statements are accepted. Anything else is a hard error:
+    IF EXISTS ...` statements are accepted, and CASCADE is rejected outright:
+    a CASCADE drop removes dependent objects silently, which bypasses the
+    destructive-change gate (that gate only reads db/migrations). Anything
+    else is a hard error:
     this file runs before the destructive-change gate (which only reads
     db/migrations), and a non-idempotent line would block every future
     deploy after the first successful one.
@@ -60,6 +63,12 @@ def load_retirements(root: Path):
         if missing:
             raise SystemExit(f"✗ {RETIREMENTS}:{i}: missing required key(s): {', '.join(sorted(missing))}")
         stmt = str(obj["stmt"]).strip().rstrip(";")
+        if re.search(r"\bCASCADE\b", stmt, re.IGNORECASE):
+            raise SystemExit(
+                f"✗ {RETIREMENTS}:{i}: CASCADE is not allowed in a retirement "
+                f"(it silently drops dependent objects, bypassing review). List the "
+                f"dependents as their own DROP lines instead, dependents first. Got: {stmt}"
+            )
         if not ok.match(stmt):
             raise SystemExit(
                 f"✗ {RETIREMENTS}:{i}: stmt must be 'DROP <VIEW|FUNCTION|PROCEDURE|TRIGGER|TYPE> "
@@ -103,6 +112,26 @@ def declared_objects(root: Path) -> set:
     return declared
 
 
+def managed_schemas(objects_root: Path) -> list:
+    """Schemas under management: public + every CREATE SCHEMA in db/schema.
+
+    The ghost check must scan ALL managed schemas: objects moved into
+    auth/authz/employee/employee_data would otherwise never be compared and a
+    deleted one would leave an unflagged ghost. Mirrors lib.sh lb_schema_args.
+    """
+    import re
+    schemas = {"public"}
+    sf = objects_root.parent / "schema"
+    if sf.is_dir():
+        for f in sf.glob("*.sql"):
+            for m in re.finditer(
+                r"(?i)CREATE\s+SCHEMA\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_]\w*)",
+                f.read_text(encoding="utf-8"),
+            ):
+                schemas.add(m.group(1).lower())
+    return sorted(schemas)
+
+
 def check_ghosts(conn, root: Path) -> int:
     """Fail the deploy if the DB holds a code object declared nowhere.
 
@@ -119,20 +148,21 @@ def check_ghosts(conn, root: Path) -> int:
             if raw.strip():
                 ignored.add(str(json.loads(raw)["object"]).strip().lower())
     live = {}
+    schemas = managed_schemas(root)
     # deptype='e' filter: objects owned by extensions (e.g. pgcrypto's
     # crypt/pgp_* land in public) are never ghosts — same rule the drift
     # probe's 5b comparison applies.
     for sql in (
-        "SELECT proname, CASE prokind WHEN 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname='public' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')",
-        "SELECT c.relname, 'VIEW' FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind = 'v' AND n.nspname='public' AND NOT EXISTS (SELECT 1 FROM pg_rewrite r JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass WHERE r.ev_class = c.oid AND d.deptype = 'e')",
+        "SELECT proname, CASE prokind WHEN 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = ANY(%s) AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')",
+        "SELECT c.relname, 'VIEW' FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind = 'v' AND n.nspname = ANY(%s) AND NOT EXISTS (SELECT 1 FROM pg_rewrite r JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass WHERE r.ev_class = c.oid AND d.deptype = 'e')",
     ):
-        for r in conn.execute(sql).fetchall():
+        for r in conn.execute(sql, (schemas,)).fetchall():
             live[r[0].lower()] = r[1]
     order = {"VIEW": 0, "FUNCTION": 1, "PROCEDURE": 2}  # dependents before dependees
     ghosts = sorted(set(live) - declared - ignored, key=lambda g: order[live[g]])
     if not ghosts:
         return 0
-    print("  ✗ ghost objects: live in public but declared nowhere in db/objects (renamed? add a retirement line, dependents first):", file=sys.stderr)
+    print(f"  ✗ ghost objects: live in {', '.join(schemas)} but declared nowhere in db/objects (renamed? add a retirement line, dependents first):", file=sys.stderr)
     for g in ghosts:
         print(f"      {g} ({live[g].lower()}): add {{\"stmt\": \"DROP {live[g]} IF EXISTS {g};\", ...}} to db/objects/retirements.jsonl", file=sys.stderr)
     if sys.stdin.isatty():

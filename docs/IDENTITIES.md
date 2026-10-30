@@ -2,9 +2,12 @@
 
 STATUS: SP setup complete (principals, Lakebase roles, Postgres grants via
 the `app_pipeline` group). Credential switchover is ONE console step away:
-generate an OAuth secret per SP (below). Workflows still run on the static
-`DATABRICKS_TOKEN` today; the mint step in cd-promotion is already written
-so the switchover changes secrets, not code.
+generate an OAuth secret per SP (below). Workflows run on the static
+workspace PAT today, split by scope: `DATABRICKS_TOKEN_CI` (repository
+secret) for PR and monitor jobs, `DATABRICKS_TOKEN` (an environment secret
+on every CD environment) for the CD deploy job only. A PR run can no longer
+read the deploy-capable token; the SP switchover replaces the values, not
+the workflow references.
 
 ## The credential pattern (documented, established)
 
@@ -40,24 +43,25 @@ work at workspace level on Free Edition, so M2M is the implemented pattern.
    `DATABRICKS_AUTH_TYPE=client-credentials` (or the SDK equivalent) and the
    minted database credential belongs to that SP's Postgres role.
 
-### Secret scoping (same console pass)
+### Secret scoping (implemented; the SP pass replaces the values)
 
-While generating the secrets, also scope the GitHub secrets so PR jobs can
-never hold a production-capable credential:
+The GitHub-side scoping is DONE (audit fix, 2026-10-30). When the SP secrets
+are generated, only the values change:
 
-1. Move `DATABRICKS_TOKEN` from repository secrets to ENVIRONMENT secrets on
-   `production` (Settings → Environments → production → secrets). Only the
-   CD job (which declares `environment: production`) can read it.
-2. Create a repository secret `DATABRICKS_TOKEN_CI` for PR/monitor jobs
-   (today: same value; after the switchover: an SP-CI / SP-MONITOR token).
-3. Swap the workflow references: `secrets.DATABRICKS_TOKEN` →
-   `secrets.DATABRICKS_TOKEN_CI` in pr-validation.yml and
-   schema-drift-monitor.yml.
+1. `DATABRICKS_TOKEN` is an ENVIRONMENT secret on every CD environment
+   (`dev`, `qa`, `stage`, `production`); the CD job resolves it because it
+   declares `environment: <deploy_env>`. stage/production additionally carry
+   required reviewers.
+2. `DATABRICKS_TOKEN_CI` is a repository secret for PR/monitor jobs (today:
+   the same PAT value; after the switchover: SP-CI / SP-MONITOR tokens).
+3. The workflow references already point the right way: pr-validation.yml and
+   schema-drift-monitor.yml read `secrets.DATABRICKS_TOKEN_CI`; the CD
+   promote job reads `secrets.DATABRICKS_TOKEN` (environment-scoped).
 
-Residual until the Lakebase project roles are split: all three SPs are
-members of `app_pipeline` (which owns the schema), so a leaked CI or monitor
-credential could write to production. The real control is Lakebase project
-RBAC per identity, which needs the SP secrets first.
+Residual until the Lakebase project roles are split: all pipeline identities
+are members of `app_pipeline` (which owns the schema), so a leaked CI or
+monitor credential could still write to production. The real control is
+Lakebase project RBAC per identity, which needs the SP secrets first.
 
 Identity map (client id → role):
 

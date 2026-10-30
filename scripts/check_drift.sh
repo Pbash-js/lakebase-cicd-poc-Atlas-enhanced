@@ -79,13 +79,18 @@ if [ "${ATLAS_EDITION:-ce}" = "pro" ]; then
   # Desired state built by scripts/build_desired.py (single source of truth;
   # same builder branch_test.sh uses for the declarative deploy).
   python scripts/build_desired.py --out "$REPO/.tmp_pro/desired.sql" >/dev/null
-  PRO_OUT="$("$ATLAS_BIN" schema diff \
+  # All declared schemas, not just public: objects moved into auth/authz/
+  # employee/employee_data were invisible to a hard-coded --schema public
+  # (lb_schema_args = public + every CREATE SCHEMA in db/schema).
+  PRO_SCHEMA_ARGS=()
+  while read -r _a; do [ -n "$_a" ] && PRO_SCHEMA_ARGS+=("$_a"); done < <(lb_schema_args)
+  PRO_OUT=$("$ATLAS_BIN" schema diff \
     --from "$PROD_URL" \
     --to "file://${REPO}/.tmp_pro/desired.sql" \
     --dev-url "$DEV_URL" \
-    --schema public \
+    "${PRO_SCHEMA_ARGS[@]}" \
     --exclude "public.schema_migrations" \
-    --exclude "public.grant_*" 2>&1)" || {
+    --exclude "public.grant_*" 2>&1) || {
     echo "✗ atlas schema diff (Pro) failed:"; printf '%s\n' "$PRO_OUT"; exit 2;
   }
   # ponytail: platform-owned event triggers (on_create_*) cannot be --exclude'd
@@ -164,25 +169,31 @@ python scripts/apply_objects.py \
 }
 
 PROBE_URL="postgres://${ENCODED_USER}:${PROBE_TOKEN}@${PROBE_HOST}:5432/databricks_postgres?sslmode=require"
-DEF_DIFF="$(python - "$PROD_URL" "$PROBE_URL" "$REPO" <<'PYEOF'
+# All declared schemas (lb_schema_args): the def comparison previously scanned
+# ONLY public, so objects in auth/authz/employee/employee_data were never
+# compared and a deleted one left an unflagged ghost.
+SCHEMA_LIST="$(lb_schema_args | awk '{print $2}' | paste -sd,)"
+DEF_DIFF="$(python - "$PROD_URL" "$PROBE_URL" "$REPO" "$SCHEMA_LIST" <<'PYEOF'
 import sys, re, difflib, psycopg
 from pathlib import Path
+
+SCHEMAS = [s for s in sys.argv[4].split(",") if s]
 
 # Objects owned by extensions (databricks_auth etc.) are not ours to police.
 DEFS_SQL = """
 SELECT 'function', pg_get_functiondef(p.oid), p.proname::text
   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
- WHERE n.nspname = 'public' AND p.prokind = 'f'
+ WHERE n.nspname = ANY(%(schemas)s) AND p.prokind = 'f'
    AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')
 UNION ALL
 SELECT 'procedure', pg_get_functiondef(p.oid), p.proname::text
   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
- WHERE n.nspname = 'public' AND p.prokind = 'p'
+ WHERE n.nspname = ANY(%(schemas)s) AND p.prokind = 'p'
    AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')
 UNION ALL
 SELECT 'view', pg_get_viewdef(c.oid, true), c.relname::text
   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
- WHERE c.relkind = 'v' AND n.nspname = 'public'
+ WHERE c.relkind = 'v' AND n.nspname = ANY(%(schemas)s)
    AND NOT EXISTS (
      SELECT 1 FROM pg_rewrite r JOIN pg_depend d
        ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass
@@ -191,14 +202,14 @@ UNION ALL
 SELECT 'trigger', pg_get_triggerdef(t.oid), t.tgname::text
   FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
    JOIN pg_namespace n ON n.oid = c.relnamespace
- WHERE NOT t.tgisinternal AND n.nspname = 'public'
+ WHERE NOT t.tgisinternal AND n.nspname = ANY(%(schemas)s)
    AND NOT EXISTS (SELECT 1 FROM pg_depend d
                     WHERE d.objid = t.oid AND d.classid = 'pg_trigger'::regclass AND d.deptype = 'e')
 """
 
 def dump(url):
     with psycopg.connect(url) as c:
-        rows = c.execute(DEFS_SQL).fetchall()
+        rows = c.execute(DEFS_SQL, {"schemas": SCHEMAS}).fetchall()
     lines = sorted(f"{k}|{' '.join(d.split())}" for k, d, n in rows if d)
     names = {(k, n.lower()) for k, d, n in rows if d}
     return lines, names
