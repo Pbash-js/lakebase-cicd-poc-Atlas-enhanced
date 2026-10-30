@@ -107,7 +107,10 @@ if [ "${ATLAS_EDITION:-ce}" = "pro" ]; then
 fi
 
 DESIRED="$(mktemp -d)/desired.sql"
-{ cat "db/schema/schema.sql"; find db/schema -name '*.sql' ! -name 'schema.sql' -type f | LC_ALL=C sort | xargs -r cat; } > "$DESIRED"
+# schema-only desired state via the ONE builder (audit finding 12). python is
+# native: convert the MSYS mktemp path first (see gen_migration.sh).
+_win="$DESIRED"; command -v cygpath >/dev/null 2>&1 && _win=$(cygpath -m "$DESIRED")
+python scripts/build_desired.py --schema-only --out "$_win" >/dev/null
 [ -s "$DESIRED" ] || { echo "✗ db/schema is empty" >&2; exit 2; }
 command -v cygpath >/dev/null 2>&1 && DESIRED=$(cygpath -m "$DESIRED")  # Windows: file:// URLs need native paths
 
