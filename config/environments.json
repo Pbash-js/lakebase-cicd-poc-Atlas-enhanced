@@ -1,0 +1,37 @@
+{
+  "_comment": "Single source of truth for environment mapping. Every CI/CD workflow resolves the target workspace, database and deploy gate through this file (scripts/resolve_env.py). host/token are secret NAMES, not values; the workflows declare each referenced secret and select by name at runtime. database = Lakebase branch = the state CD applies to. Deploy uses bundle target = environment key (databricks.yml targets dev/qa/stage/prod). Moving an environment to another workspace or database edits this file only.",
+  "environments": {
+    "dev": {
+      "git_branch": "dev",
+      "host": "DATABRICKS_HOST",
+      "token": "DATABRICKS_TOKEN",
+      "project": "core-app-db",
+      "database": "env-dev",
+      "deploy_env": ""
+    },
+    "qa": {
+      "git_branch": "qa",
+      "host": "DATABRICKS_HOST",
+      "token": "DATABRICKS_TOKEN",
+      "project": "core-app-db",
+      "database": "env-qa",
+      "deploy_env": ""
+    },
+    "stage": {
+      "git_branch": "release/**",
+      "host": "DATABRICKS_HOST",
+      "token": "DATABRICKS_TOKEN",
+      "project": "core-app-db",
+      "database": "env-stage",
+      "deploy_env": "stage"
+    },
+    "prod": {
+      "git_branch": "prod",
+      "host": "DATABRICKS_HOST",
+      "token": "DATABRICKS_TOKEN",
+      "project": "core-app-db",
+      "database": "production",
+      "deploy_env": "production"
+    }
+  }
+}
