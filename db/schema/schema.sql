@@ -1,7 +1,6 @@
 -- Desired state: single declarative SQL file. The Atlas source of truth
 -- for structural schema (tables, columns, indexes, constraints, enums).
 -- Code objects (functions, procedures, views, triggers) live in db/objects.
-CREATE TYPE order_status AS ENUM ('new', 'shipped', 'cancelled');
 
 CREATE TABLE customers (
     customer_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -33,3 +32,13 @@ CREATE TABLE shipments_original (
 );
 CREATE UNIQUE INDEX idx_customers_name ON customers (name);
 CREATE INDEX idx_shipments_order ON shipments_original (order_id);
+
+CREATE TABLE audit_log (
+    audit_id   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    table_name TEXT NOT NULL,
+    row_id     BIGINT NOT NULL,
+    action     TEXT NOT NULL,
+    changed_by TEXT NOT NULL DEFAULT current_user,
+    changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_audit_log_table_row ON audit_log (table_name, row_id);
