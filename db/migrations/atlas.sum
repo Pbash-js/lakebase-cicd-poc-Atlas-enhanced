@@ -1,4 +1,4 @@
-h1:YU+lGkz0GDK1C1d7rJBQJCIu0KBqpLiEMzy5sbSZccE=
+h1:UcnRSHw4LUEyOZv4oCzfQlcm5gRLQDWgKk31Jtqy4Ao=
 001_init_schema.sql h1:j82hHqtab4FXTsmjE6/EXV139OJeSUeuEnnWf9QMTig=
 002_seed_and_index.sql h1:mEeVPSG/bnJPXV1woLZOXIBiiPzFgdNJNX3CATX8sf4=
 003_add_note_column.sql h1:212FKADqt5mObZdAH5Zlys3s2OTOKbJbU/7AglTl+RM=
@@ -12,3 +12,4 @@ h1:YU+lGkz0GDK1C1d7rJBQJCIu0KBqpLiEMzy5sbSZccE=
 20261028194019_atlas_generated.sql h1:RY9jO2Zs8VJhkSPvEcm75StKX9Yyhlsx/HSj24p8V3M=
 20261029074946_test_pro_objects.sql h1:aExWwCDCiqDliQyP2FLSiyjjD7TJMTGiHmQbuZajG28=
 20261030072736_test_ce_objects.sql h1:SI7tT2VWVNvaN7NRCgwOG+UQDVbe59aeqNjdv75gO5w=
+20261030151157_audit_remediation.sql h1:w3osMP1Lox2ogiaiN49w/I1vR73J5w1EbkXgXe1N2dw=
