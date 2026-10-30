@@ -59,6 +59,23 @@ Rules:
 - **Two approval controls.** Branch protection approves the code (per-baseline review counts + required checks); GitHub environments approve the deployment (`stage` and `production` carry required reviewers). A merge never deploys by itself.
 - **Environment map is one file.** `config/environments.yml` is the single source of truth: git branch -> workspace credentials (by secret name), Lakebase project, database (Lakebase branch), bundle target and deploy gate. Every workflow resolves through it; moving an environment to another workspace or database edits that file only. Current topology (Free Edition): one workspace, one project, one long-lived Lakebase branch per environment (`env-dev`, `env-qa`, `env-stage`, `production`). PR rehearsal forks from the base branch's environment database (non-baseline bases fall back to prod).
 
+### Extending to production workspaces
+
+The 4-workspace target (DEV/QA/STAGE/PROD, one Lakebase project and database named `production` per workspace) requires no workflow changes. Steps, in order:
+
+1. In each new workspace: create the Lakebase project, grant the CI/CD service principals the same roles as in the shared workspace (`docs/IDENTITIES.md`).
+2. Add one secret pair per workspace (`DATABRICKS_HOST_<ENV>`, `DATABRICKS_TOKEN_<ENV>`) and list both names once in the workflow env blocks (marked in `config/environments.yml` header).
+3. Edit `config/environments.yml`: each row's `host`/`token` point at the new pair, `project` at the new project id, `database` at `production`.
+4. Edit `databricks.yml`: each target's branch parent points at the new project.
+5. The Free Edition endpoint cap no longer applies at 4 workspaces; until then, keep concurrent active endpoints under ~3 (see operational notes).
+
+### Operational notes (Free Edition constraints)
+
+- **Endpoint concurrency cap (~3 active).** Every Lakebase branch endpoint that is ACTIVE counts. Rehearsal fork endpoints stay ACTIVE after their CI run finishes. Before any CD wave, disable endpoints not needed for that wave (`update-endpoint ... spec.disabled {"spec":{"disabled":true}}`); production plus the one target environment is the minimum set. Disabled endpoints wake on first connection.
+- **Disabled branches can be reaped.** A branch left disabled may be removed by platform housekeeping; if an environment database goes missing, recreate it off production and let the next CD re-apply pending migrations from the ledger.
+- **Capacity errors can surface as plan drift.** The plan check reports a connection-capacity failure as "schema.sql is not covered by db/migrations". Check the log for the endpoint-capacity message before treating a red gate as drift. Classification fix is an open item (section 11).
+- **Rerun re-arms gates.** Re-running a CD run that waits on an environment approval re-requests that approval.
+
 ## 3. Repository structure
 
 ```
@@ -180,9 +197,12 @@ Exit codes: 0 clean, 1 drift, 2 probe error. The scheduled workflow (`schema-dri
 | --- | --- | --- |
 | Atlas Cloud bot token | configured; official actions green in CI | closed |
 | OIDC identities | SPs, Lakebase roles, Postgres grants done; subject strings in `docs/IDENTITIES.md` | federation policies need account-level API |
-| Ownership | CODEOWNERS and protected production branch | skipped for the POC by decision |
+| Ownership | branch protection live on all four baselines; CODEOWNERS in place | closed for the POC (single owner) |
 | Schema Monitoring | register production in Atlas Cloud after licensing | manual step, post-license |
-| Carry-overs | RBAC as code, AI-impact review, multi-environment promotion | platform decisions |
+| Multi-environment promotion | proven on both editions through dev -> qa -> stage (section 2) | closed for the POC; prod promotion pending real workspaces |
+| Endpoint hygiene automation | manual disable/enable per CD wave (operational notes, section 2) | small GC workflow to disable spent `pr-<n>` endpoints |
+| Capacity-error classification | endpoint-capacity failures surface as plan-drift in the plan check | classify as infra error (exit 2 semantics) with a retry hint |
+| Carry-overs | RBAC as code, AI-impact review | platform decisions |
 
 ## 12. References
 

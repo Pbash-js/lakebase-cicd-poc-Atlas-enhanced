@@ -58,6 +58,17 @@ Four baseline branches map 1:1 to the four workspaces. All changes arrive by PR;
 
 Rules: `feat/*` from `dev`; `hotfix/*` from `prod` (the branch whose state production runs); one live `release/x.y` at a time (cut from `qa`, promoted to `prod`, retired on the next cut); hotfixes propagate back down by merge PRs `prod -> release/x.y -> qa -> dev` (the exactly-once ledger makes each apply only what that workspace lacks). The branch -> workspace -> database -> deploy-gate map lives in one file, `config/environments.yml`, which every workflow reads; today each environment is a long-lived Lakebase branch in the shared project, and moving to separate workspaces is an edit to that file. Design rationale: [docs/DESIGN.md](docs/DESIGN.md), section 2.
 
+Environment databases (current topology):
+
+| Git baseline | Lakebase database | Deploy gate |
+| --- | --- | --- |
+| `dev` | `env-dev` | merge |
+| `qa` | `env-qa` | merge |
+| `release/x.y` | `env-stage` | `stage` environment reviewers |
+| `prod` | `production` | `production` environment reviewers |
+
+Free Edition operational notes: endpoints cap at ~3 concurrently ACTIVE; spent `pr-<n>` rehearsal endpoints stay ACTIVE until disabled, so disable endpoints not needed for the current CD wave (`update-endpoint ... spec.disabled`). Disabled branches can be reaped by platform housekeeping; recreate an environment database off production and the next CD re-applies pending migrations from the ledger. A rerun of a gated CD run re-requests environment approval. Capacity errors can surface as "plan drift" in CI; check the log for the endpoint-capacity message first. Extending to 4 real workspaces: [docs/DESIGN.md](docs/DESIGN.md), section 2.
+
 ## What each file does
 
 | Path | Role |
