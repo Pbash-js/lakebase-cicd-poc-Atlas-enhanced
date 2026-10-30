@@ -33,14 +33,18 @@ jobs:
       - name: Install Atlas CE (pinned)
         uses: ./.github/actions/setup-atlas
 
-      - name: Run drift probe (production vs Git)
-        id: probe
+      - name: Resolve prod environment from config
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: |
+          python3 scripts/resolve_env.py prod cd
+
+      - name: Run drift probe (production vs Git)
+        id: probe
+        env:
           ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
           ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
-          LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
           ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
         run: |

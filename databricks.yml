@@ -5,34 +5,47 @@ bundle:
 # target (dev -> dev, qa -> qa, release/* -> stage, prod -> prod).
 # Pattern per target: declare the branch + primary endpoint with
 # replace_existing: true — DABs cannot adopt an existing postgres_project, so
-# the project is never declared in the bundle; its id is recorded here.
+# the project is never declared in the bundle; its id lives in
+# config/environments.json (the single source of truth).
 #
-# Workspace isolation model: each target is a SEPARATE Databricks workspace
-# (own catalog, own identity, own secrets, own Lakebase project) — the same
-# commit travels dev -> qa -> stage -> prod through the identical pipeline.
-#
-# PLACEHOLDER PROJECT IDS: qa/stage carry placeholder ids. When a workspace is
-# provisioned, replace the placeholder here AND set the matching repo variable
-# (LAKEBASE_PROJECT_QA / LAKEBASE_PROJECT_STAGE) — the CD workflow deploys a
-# workspace only when its variable is set, so placeholders never deploy.
+# Current topology (Free Edition): one workspace, one project, one long-lived
+# Lakebase branch per environment (env-dev / env-qa / env-stage / production).
+# Moving an environment to its own workspace/project = edit
+# config/environments.json; when that happens, update the matching target's
+# branch parent here too.
 
 targets:
   dev:
     mode: development
     default: true
+    resources:
+      postgres_branches:
+        dev_branch:
+          parent: projects/core-app-db
+          branch_id: env-dev
+          no_expiry: true
+          replace_existing: true
+      postgres_endpoints:
+        dev_endpoint:
+          parent: projects/core-app-db/branches/env-dev
+          endpoint_id: primary
+          endpoint_type: ENDPOINT_TYPE_READ_WRITE
+          autoscaling_limit_min_cu: 1
+          autoscaling_limit_max_cu: 1
+          replace_existing: true
 
   qa:
     mode: production
     resources:
       postgres_branches:
         qa_branch:
-          parent: projects/core-app-db   # PLACEHOLDER: replace with the QA workspace project id
-          branch_id: production
+          parent: projects/core-app-db
+          branch_id: env-qa
           no_expiry: true
           replace_existing: true
       postgres_endpoints:
         qa_endpoint:
-          parent: projects/core-app-db/branches/production   # PLACEHOLDER: same replacement
+          parent: projects/core-app-db/branches/env-qa
           endpoint_id: primary
           endpoint_type: ENDPOINT_TYPE_READ_WRITE
           autoscaling_limit_min_cu: 1
@@ -44,13 +57,13 @@ targets:
     resources:
       postgres_branches:
         stage_branch:
-          parent: projects/core-app-db   # PLACEHOLDER: replace with the Stage workspace project id
-          branch_id: production
+          parent: projects/core-app-db
+          branch_id: env-stage
           no_expiry: true
           replace_existing: true
       postgres_endpoints:
         stage_endpoint:
-          parent: projects/core-app-db/branches/production   # PLACEHOLDER: same replacement
+          parent: projects/core-app-db/branches/env-stage
           endpoint_id: primary
           endpoint_type: ENDPOINT_TYPE_READ_WRITE
           autoscaling_limit_min_cu: 1
