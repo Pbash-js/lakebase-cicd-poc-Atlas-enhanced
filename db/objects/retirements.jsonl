@@ -1,3 +1,6 @@
 {"stmt": "DROP VIEW IF EXISTS v_order_totals;", "reason": "fn_total_for_customer return type BIGINT -> INTEGER (PR #10); the view depends on the function, so it is dropped first and recreated by the 04_views replay", "requested_in": "PR#10"}
 {"stmt": "DROP FUNCTION IF EXISTS fn_total_for_customer(BIGINT);", "reason": "signature retirement: fn_total_for_customer return type BIGINT -> INTEGER (PR #10); CREATE OR REPLACE cannot change a return type", "requested_in": "PR#10"}
 {"stmt": "DROP PROCEDURE IF EXISTS sp_mark_shipped;", "reason": "resolved interactively at deploy time (ghost check)", "requested_in": "interactive"}
+{"stmt": "DROP TRIGGER IF EXISTS trg_emp_data_v2 ON employee_data.employee_details;", "reason": "audit 2026-10-30 finding 9: BEFORE INSERT trigger whose function inserted into the same table; employee_details could never take a row", "requested_in": "audit 2026-10-30"}
+{"stmt": "DROP FUNCTION IF EXISTS employee_data.fn_emp_data_insert();", "reason": "audit 2026-10-30 finding 9: dead without its trigger; the self-insert logic was the bug", "requested_in": "audit 2026-10-30"}
+{"stmt": "DROP PROCEDURE IF EXISTS employee.sp_emp_salary(INT);", "reason": "audit 2026-10-30 finding 9: parameter renamed employee_id -> p_employee_id; Postgres refuses CREATE OR REPLACE with a changed parameter name", "requested_in": "audit 2026-10-30"}

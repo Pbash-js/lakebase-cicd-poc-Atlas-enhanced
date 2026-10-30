@@ -137,6 +137,7 @@ jobs:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_CI }}   # resolver checks availability by NAME; the PR job only has the CI token
         run: |
+          pip3 install -q "pyyaml==6.0.2"
           python3 scripts/resolve_env.py "$BASE" rehearsal
 
       - name: Recreate ephemeral PR branch (fresh fork of the environment database every run)
