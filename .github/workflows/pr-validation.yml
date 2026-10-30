@@ -129,7 +129,7 @@ jobs:
         run: pip3 install "psycopg[binary]==3.2.9" "pytest==8.3.5"
 
       # Environment-aware rehearsal: the PR's BASE branch selects the environment
-      # via config/environments.yml (single source of truth); the rehearsal fork
+      # via config/environments.json (single source of truth); the rehearsal fork
       # comes off that environment's database. Non-baseline bases fall back to prod.
       - name: Resolve rehearsal environment from base branch
         env:
