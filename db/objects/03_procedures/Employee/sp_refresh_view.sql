@@ -1,0 +1,7 @@
+CREATE OR REPLACE PROCEDURE sp_refresh_view(IN view_name VARCHAR(100))
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    EXECUTE 'REFRESH MATERIALIZED VIEW ' || view_name;
+END;
+$$;
