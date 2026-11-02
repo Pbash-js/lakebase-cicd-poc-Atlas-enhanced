@@ -114,19 +114,24 @@ docs/
 
 Pro unlocks with `ATLAS_TOKEN` (Atlas Cloud API token) and `ATLAS_EDITION=pro`. Locally, `init_project.sh` writes `ATLAS_EDITION=pro` into `.env.local`, so the declarative inner loop is the developer default; in CI the repo variable decides and `ce` is the default when unset.
 
-| Pipeline stage | Implementation |
-| --- | --- |
-| Local inner loop | `branch_test.sh`: one declarative apply of the FULL desired state (`build_desired.py` -> `apply_desired.py`), schema + objects, one transaction, no migration needed |
-| Declarative apply | `atlas schema diff` (pure-SQL format) plans; `apply_desired.py` executes verbatim minus Lakebase platform-owned statements, in one transaction with a 5s lock timeout |
-| Lint on PR | official `ariga/atlas-action/migrate/lint` (`pr-validation.yml`): parsed analyzers for destructive, blocking and data-dependent changes; native report on the PR |
-| Versioning on merge | official `migrate/push` to the Atlas Schema Registry (`cd-promotion.yml`) |
-| Apply to production | official `migrate/apply` action with a minted 1-hour Lakebase credential |
-| Drift detection | one object-aware `atlas schema diff` of the target against the full desired state: no probe branch, no replay; covers objects and ghosts |
-| Rollback | `rollback_migration.sh` wrapping `atlas migrate down`: reverse plan plus pre-revert data checks; refuses production |
-| Integrity | `atlas migrate validate` runs before every apply, both editions |
-| Monitoring (post-license) | register the production database in Atlas Cloud: continuous drift, changelog, ERD, lineage |
+### 4.1 The exact Atlas commands, and what happens without Pro
 
-Platform constraint (verified on v1.3.5): `atlas schema apply --auto-approve` is unusable on Lakebase. Atlas plans `DROP EVENT TRIGGER` for the platform-owned `on_create_*`/`on_drop_*` triggers; they are not excludable (`--exclude` does not match them; `atlas.hcl` `skip` blocks are lint-analyzer only) and the DROP fails with "must be owner". `apply_desired.py` is the consequence: Atlas still owns planning and ordering; the executor filters the platform statements and runs the rest as one transaction. A schema allowlist (`public` + every `CREATE SCHEMA` in `db/schema`) keeps `__db_system` and the Atlas ledger schema out of every plan.
+Every Atlas invocation in this repo, what each buys us under Pro, and the closure (or accepted loss) under CE. This table is the contract between sections 4 and 6; the CE hard-limitation detail stays in section 6.
+
+| Atlas command (exact form in this repo) | Role | What it does for us under Pro | CE mitigation |
+| --- | --- | --- | --- |
+| `atlas schema diff --from <target-url> --to file://<desired.sql> --dev-url <scratch> --schema <allowlist> --format '{{ sql . "  " }}'` | declarative planning; the drift probe (`apply_desired.py`, `check_drift.sh`) | plans the FULL desired state — tables and code objects — against the live database, object-aware, as pure SQL we can execute ourselves; the schema allowlist (`public` + every `CREATE SCHEMA` in `db/schema`) keeps `__db_system` and the Atlas ledger schema out of every plan | the same command still runs (both editions plan), but object coverage degrades to structural-only: objects ride the replay instead of the diff, and drift is measured by the probe-branch replay + `pg_get_*` definition compare + ghost check (sections 6 and 7) |
+| `atlas schema apply --auto-approve` | rejected — never used | would be the one-step declarative apply; on Lakebase it is unusable (see the platform constraint below) | `apply_desired.py` replaces it for BOTH editions: Atlas still owns planning and ordering, our executor filters the platform-owned statements and runs the rest in one transaction |
+| `atlas migrate diff` | migration authoring (`gen_migration.sh`) | turns the desired state into exactly one migration against a `template0` scratch; a plan containing object DDL hard-fails (objects ride the replay, never migrations) | identical in CE — no mitigation needed |
+| `atlas migrate validate` | integrity gate | directory and `atlas.sum` integrity checked before every apply, both editions | identical in CE |
+| `atlas migrate apply --tx-mode all` (CD uses the official `migrate/apply` action) | versioned apply (`apply_migrations_atlas.sh`) | exactly-once against the `atlas_schema_revisions` ledger; the whole batch is one transaction | the CLI command is identical in CE; the official action wrapper is a Pro convenience only |
+| `atlas migrate hash` | post-edit re-hash | keeps `atlas.sum` authoritative after hand-edits (renames, CRLF fixes) | identical in CE |
+| `ariga/atlas-action/migrate/lint` (`pr-validation.yml`) | PR gate | parsed analyzers for destructive, blocking and data-dependent changes; native report on the PR | regex destructive gate in the CI lint step + the `destructive-approved` label for the cases the regex cannot classify |
+| official `migrate/push` (`cd-promotion.yml`) | registry versioning on merge | pushes the migration directory to the Atlas Schema Registry: cloud ledger, ERD, lineage | Git is the only history; nothing is pushed |
+| `atlas migrate down` (`rollback_migration.sh`) | rollback | reverse plan plus pre-revert data checks; refuses production | no equivalent: recovery branch fork (created in the CD pre-step) or a forward migration |
+| Atlas Cloud monitoring | post-license | register the production database: continuous drift, changelog, ERD, lineage | the scheduled probe (`schema-drift-monitor.yml`): once daily, name-level approximations |
+
+Platform constraint (verified on v1.3.5): `atlas schema apply --auto-approve` plans `DROP EVENT TRIGGER` for the platform-owned `on_create_*`/`on_drop_*` triggers; they are not excludable (`--exclude` does not match them; `atlas.hcl` `skip` blocks are lint-analyzer only) and the DROP fails with "must be owner". `apply_desired.py` is the consequence and is edition-independent: Atlas plans, the executor disposes.
 
 ## 5. Versioned path (both editions, and all of CI/CD)
 
