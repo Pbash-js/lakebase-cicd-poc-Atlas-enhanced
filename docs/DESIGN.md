@@ -2,7 +2,7 @@
 
 Status: implemented. Prose states the design as built; the repo is the source of truth for code.
 
-Atlas Pro is the deliverable: the declarative desired state, the official GitHub Actions and the Schema Registry carry the pipeline. Atlas CE is a documented fallback with known limitations (section 6). Both run the same repository: the engine is one runtime setting, and a migration applied by either lands in the same `atlas_schema_revisions` ledger.
+Atlas Pro is the deliverable: the declarative desired state, the official GitHub Actions and the Schema Registry carry the pipeline. Atlas CE is a documented fallback with known limitations (section 6). Both run the same repository, but CI uses two different binary sources: CE downloads the pinned community build from `atlasbinaries.com`; Pro installs via `ariga/setup-atlas@v0` with an Atlas Cloud token. A migration applied by either lands in the same `atlas_schema_revisions` ledger.
 
 ---
 
@@ -104,7 +104,8 @@ scripts/
 └── rollback_migration.sh    atlas migrate down wrapper (Pro, dev branches)
 .github/
 ├── workflows/               pr-validation, cd-promotion, schema-drift-monitor
-└── actions/setup-atlas/     composite: pinned Atlas install for CI
+└── actions/setup-atlas/     composite: pinned Atlas CE install for CI
+                           # Pro uses ariga/setup-atlas@v0 with ATLAS_CLOUD_TOKEN
 docs/
 ├── DESIGN.md                this file
 └── IDENTITIES.md            SP identities, subject strings, credential patterns
@@ -112,7 +113,7 @@ docs/
 
 ## 4. Engine: Atlas Pro (deliverable)
 
-Pro unlocks with `ATLAS_TOKEN` (Atlas Cloud API token) and `ATLAS_EDITION=pro`. Locally, `init_project.sh` writes `ATLAS_EDITION=pro` into `.env.local`, so the declarative inner loop is the developer default; in CI the repo variable decides and `ce` is the default when unset.
+Pro unlocks with `ATLAS_TOKEN` (Atlas Cloud API token for the atlas CLI) and `ATLAS_EDITION=pro`. In CI, the binary itself is installed by `ariga/setup-atlas@v0` using a separate `ATLAS_CLOUD_TOKEN` secret. Locally, `init_project.sh` writes `ATLAS_EDITION=pro` into `.env.local`, so the declarative inner loop is the developer default; in CI the repo variable decides and `ce` is the default when unset.
 
 ### 4.1 The exact Atlas commands, and what happens without Pro
 
@@ -124,7 +125,7 @@ Every Atlas invocation in this repo, what each buys us under Pro, and the closur
 | `atlas schema apply --auto-approve` | rejected — never used | would be the one-step declarative apply; on Lakebase it is unusable (see the platform constraint below) | `apply_desired.py` replaces it for BOTH editions: Atlas still owns planning and ordering, our executor filters the platform-owned statements and runs the rest in one transaction |
 | `atlas migrate diff` | migration authoring (`gen_migration.sh`) | turns the desired state into exactly one migration against a `template0` scratch; a plan containing object DDL hard-fails (objects ride the replay, never migrations) | identical in CE — no mitigation needed |
 | `atlas migrate validate` | integrity gate | directory and `atlas.sum` integrity checked before every apply, both editions | identical in CE |
-| `atlas migrate apply --tx-mode all` (CD uses the official `migrate/apply` action) | versioned apply (`apply_migrations_atlas.sh`) | exactly-once against the `atlas_schema_revisions` ledger; the whole batch is one transaction | the CLI command is identical in CE; the official action wrapper is a Pro convenience only |
+| `atlas migrate apply --tx-mode all` (CD uses the official `migrate/apply` action) | versioned apply (`apply_migrations_atlas.sh`) | exactly-once against the `atlas_schema_revisions` ledger; the whole batch is one transaction | the CLI command is identical in CE; the official action wrapper runs a different binary installed by `ariga/setup-atlas@v0`, not the pinned community download |
 | `atlas migrate hash` | post-edit re-hash | keeps `atlas.sum` authoritative after hand-edits (renames, CRLF fixes) | identical in CE |
 | `ariga/atlas-action/migrate/lint` (`pr-validation.yml`) | PR gate | parsed analyzers for destructive, blocking and data-dependent changes; native report on the PR | regex destructive gate in the CI lint step + the `destructive-approved` label for the cases the regex cannot classify |
 | official `migrate/push` (`cd-promotion.yml`) | registry versioning on merge | pushes the migration directory to the Atlas Schema Registry: cloud ledger, ERD, lineage | Git is the only history; nothing is pushed |
@@ -186,7 +187,7 @@ Exit codes: 0 clean, 1 drift, 2 probe error. The scheduled workflow (`schema-dri
 - **Human/local:** `databricks auth login` OAuth profile; no tokens in config files.
 - **CI/CD:** service principals (SP-CI, SP-CD, SP-MONITOR) authenticating via OAuth M2M client credentials, minting a 1-hour workspace token per run, then a 1-hour Postgres credential from `generate-database-credential`. The Postgres password is never long-lived. Subject strings and the console steps: `docs/IDENTITIES.md`.
 - **Why not OIDC federation:** federation policies need account-level API, unavailable on Free Edition; OAuth M2M secrets work at workspace level. M2M is the implemented pattern.
-- **Atlas Pro:** `ATLAS_TOKEN` (Atlas Cloud API token from portal.ariga.io) in CI; a local `atlas login` session unlocks everything locally. The CLI session token is not accepted as `ATLAS_TOKEN`.
+- **Atlas Pro:** CI uses two secrets: `ATLAS_CLOUD_TOKEN` (for `ariga/setup-atlas@v0` to install the binary) and `ATLAS_TOKEN` (for the atlas CLI license check). Both are minted at portal.ariga.io. A local `atlas login` session unlocks everything locally. The CLI session token is not accepted as `ATLAS_TOKEN`.
 
 ## 10. Recovery
 
