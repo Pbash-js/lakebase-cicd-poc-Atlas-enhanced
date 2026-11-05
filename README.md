@@ -2,7 +2,7 @@
 
 Architecture and design rationale: [docs/DESIGN.md](docs/DESIGN.md). This README is the operating manual.
 
-CI/CD pipeline for Databricks Lakebase Postgres, built on **Atlas Pro**: declarative desired state, official GitHub Actions, Schema Registry. Atlas CE remains available as a fallback, with the limitations listed in [CE fallback](#ce-fallback-limitations). One binary, one repo: a migration applied by either lands in the same `atlas_schema_revisions` ledger.
+CI/CD pipeline for Databricks Lakebase Postgres, built on **Atlas Pro**: declarative desired state, official GitHub Actions, Schema Registry. Atlas CE remains available as a fallback, with the limitations listed in [CE fallback](#ce-fallback-limitations). One repo, two binary sources in CI: CE downloads the pinned community build from `atlasbinaries.com`; Pro installs via `ariga/setup-atlas@v0` with an Atlas Cloud token. A migration applied by either lands in the same `atlas_schema_revisions` ledger.
 
 ```
 SOURCE (Git)                       DEPLOYMENT                                   DATABASE (Lakebase)
@@ -88,7 +88,7 @@ Rules: `feat/*` from `dev`; `hotfix/*` from `prod` (the branch whose state produ
 | Concern | Pro (deliverable) | CE (fallback) |
 | --- | --- | --- |
 | Local schema testing | declarative apply, no migration | requires a generated migration first |
-| Plan / generate migration | `ariga/atlas-action/migrate/diff` (official) | `scripts/gen_migration.sh` (template0 scratch in the branch) |
+| Plan / generate migration | `scripts/gen_migration.sh` with the `ariga/setup-atlas` binary (template0 scratch in the branch) | `scripts/gen_migration.sh` with the pinned community binary (template0 scratch in the branch) |
 | Safety lint | native analyzers, PR report | regex destructive gate + `destructive-approved` label |
 | Apply | official `migrate/apply` with a minted 1-hour credential | `apply_migrations_atlas.sh` (`--tx-mode all`) |
 | Cloud versioning | `migrate/push` -> Schema Registry | Git only (`atlas.sum`) |
@@ -257,7 +257,8 @@ Repository secrets:
 | `DATABRICKS_TOKEN` | PAT or SP token with Lakebase access |
 | `LAKEBASE_PROJECT` | core-app-db |
 | `DATABRICKS_PG_USER` | the Lakebase Postgres role that runs the pipeline |
-| `ATLAS_TOKEN` | Atlas Cloud API token (portal.ariga.io; the CLI session token is NOT accepted, verified live) |
+| `ATLAS_CLOUD_TOKEN` | Atlas Cloud API token for `ariga/setup-atlas@v0` (Pro CI only) | portal.ariga.io |
+| `ATLAS_TOKEN` | Atlas Cloud API token for the atlas CLI license check (Pro CI only; the CLI session token is NOT accepted, verified live) | portal.ariga.io |
 
 Auth today is the static `DATABRICKS_TOKEN`; the database password is still self-minted per run (below). The OIDC switchover (3 SPs, federation policies, subject strings) is specced in [docs/IDENTITIES.md](docs/IDENTITIES.md); blocked because federation policies are account-level API, beyond Free Edition.
 
