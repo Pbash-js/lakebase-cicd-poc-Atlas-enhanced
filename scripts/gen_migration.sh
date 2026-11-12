@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Wraps Atlas Community Edition `atlas migrate diff` against a scratch
+# Wraps `atlas migrate diff` against a scratch
 # database inside the target Lakebase branch. Desired state is a single
 # declarative SQL: db/schema/ (schema.sql is the base file; every other
 # *.sql in the dir is appended after it, sorted - cross-file FKs must point at
@@ -163,17 +163,15 @@ if [ "$CHECK" = 1 ]; then
     exit 1
   fi
   echo "✓ plan check clean: db/migrations matches db/schema"
-  # Pro mode: the plan check doubles as the lint gate (migrate lint is
-  # Pro-only; it replays the dir on the same scratch dev DB and parses the
-  # SQL for destructive / blocking / data-dependent changes).
-  if [ "${ATLAS_EDITION:-ce}" = "pro" ]; then
-    echo "▶ atlas lint (Pro): analyzing the latest migrations"
-    "$ATLAS_BIN" migrate lint --latest 1 \
-      --dir "file://${REPO}/db/migrations" \
-      --dev-url "$DEV_URL" \
-    || { echo "::error::atlas lint failed on an infra error (not drift) - see log above"; exit 2; }
-    echo "✓ lint clean"
-  fi
+  # The plan check doubles as the lint gate (migrate lint replays the dir on
+  # the same scratch dev DB and parses the SQL for destructive / blocking /
+  # data-dependent changes).
+  echo "▶ atlas lint: analyzing the latest migrations"
+  "$ATLAS_BIN" migrate lint --latest 1 \
+    --dir "file://${REPO}/db/migrations" \
+    --dev-url "$DEV_URL" \
+  || { echo "::error::atlas lint failed on an infra error (not drift) - see log above"; exit 2; }
+  echo "✓ lint clean"
 else
   TMPD="$(mktemp -d)"
   DESIRED="$TMPD/desired.sql"

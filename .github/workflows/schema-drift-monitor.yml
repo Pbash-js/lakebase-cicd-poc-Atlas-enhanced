@@ -15,9 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Pro mode: official Atlas install with the bot token; CE uses the pinned download.
-      - name: Atlas Cloud setup (Pro only)
-        if: vars.ATLAS_EDITION == 'pro'
+      # Official Atlas install with the bot token.
+      - name: Atlas Cloud setup
         uses: ariga/setup-atlas@v0
         with:
           cloud-token: ${{ secrets.ATLAS_CLOUD_TOKEN }}
@@ -29,9 +28,6 @@ jobs:
 
       - name: Install Python deps
         run: pip3 install "psycopg[binary]==3.2.9"
-
-      - name: Install Atlas CE (pinned)
-        uses: ./.github/actions/setup-atlas
 
       - name: Resolve prod environment from config
         env:
@@ -50,10 +46,8 @@ jobs:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_CI }}
           SOURCE_BRANCH: ${{ env.TARGET_BRANCH }}   # the prod environment's database, from config
-          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
-          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
+          ATLAS_TOKEN: ${{ secrets.ATLAS_TOKEN }}   # atlas CLI license check (Pro)
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
-          ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
         run: |
           set +e
           ./scripts/check_drift.sh > drift_report.txt 2>&1

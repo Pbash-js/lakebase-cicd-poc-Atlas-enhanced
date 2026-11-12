@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
-# Drift probe: compares the LIVE production branch against Git (items the
-# CE pipeline otherwise cannot see).
-#   5a structural : atlas schema diff --from <prod> --to db/schema/ (dir)
-#                   (tables, columns, indexes, constraints, enums)
-#   5b objects    : fork production into a short-lived probe branch, replay
-#                   db/objects there, then compare pg_get_functiondef /
-#                   pg_get_viewdef / pg_get_triggerdef between prod and the
-#                   probe. Both sides run the same Postgres version, so the
-#                   definitions compare textually without normalization glue.
+# Drift probe: compares the LIVE production branch against Git with ONE
+# object-aware `atlas schema diff` (prod vs the full desired state:
+# db/schema + db/objects). Covers structural drift, object drift and ghosts
+# (live objects missing from the desired state appear as DROPs).
 # Exits 1 and prints a drift report when anything differs; exit 0 = no drift.
-# Errors (auth, connectivity, replay failure) exit 2 so the caller can tell
+# Errors (auth, connectivity, diff failure) exit 2 so the caller can tell
 # "drift detected" from "probe itself failed".
 set -euo pipefail
 # Any unexpected command failure (auth expiry, connectivity, bad URL) must
@@ -22,13 +17,6 @@ trap 'echo "✗ probe error (see report above)" >&2; exit 2' ERR
 : "${LAKEBASE_PROJECT:?set LAKEBASE_PROJECT (the Lakebase project id)}"
 : "${DATABRICKS_PG_USER:?set DATABRICKS_PG_USER (the Lakebase Postgres role)}"
 SOURCE_BRANCH="${SOURCE_BRANCH:-production}"   # the branch treated as "live"
-PROBE_BRANCH="${PROBE_BRANCH:-drift-probe}"
-# Guard: this script deletes PROBE_BRANCH (before create and on exit). Never
-# let it point at anything that is not an ephemeral drift branch.
-case "$PROBE_BRANCH" in
-  drift-*) [ "$PROBE_BRANCH" != "$SOURCE_BRANCH" ] || { echo "✗ PROBE_BRANCH must differ from SOURCE_BRANCH" >&2; exit 2; } ;;
-  *) echo "✗ refusing to run: PROBE_BRANCH='$PROBE_BRANCH' must match drift-* (this script deletes it)" >&2; exit 2 ;;
-esac
 ATLAS_BIN="${ATLAS_BIN:-atlas}"
 command -v "$ATLAS_BIN" >/dev/null 2>&1 || { echo "✗ atlas CLI not found (set ATLAS_BIN)"; exit 2; }
 command -v python >/dev/null 2>&1 || { echo "✗ python not found"; exit 2; }
@@ -37,14 +25,12 @@ cd "$(dirname "$0")/.."
 if command -v cygpath >/dev/null 2>&1; then REPO=$(cygpath -m "$(pwd)"); else REPO=$(pwd); fi
 
 PROD_EP="projects/${LAKEBASE_PROJECT}/branches/${SOURCE_BRANCH}/endpoints/primary"
-PROBE_PATH="projects/${LAKEBASE_PROJECT}/branches/${PROBE_BRANCH}"
-PROBE_EP="${PROBE_PATH}/endpoints/primary"
 
 HOST="$(lb_host "$PROD_EP")"
 TOKEN="$(lb_token "$PROD_EP")"
 echo "::add-mask::${TOKEN}"   # never leak the runtime credential in logs
 ENCODED_USER="$(python -c "import urllib.parse;print(urllib.parse.quote('${DATABRICKS_PG_USER}', safe=''))")"
-PROD_URL="postgres://${ENCODED_USER}:${TOKEN}@${HOST}:5432/databricks_postgres?sslmode=require"
+PROD_URL="postgres://${ENCODED_USER}:***@${HOST}:5432/databricks_postgres?sslmode=require"
 
 SCRATCH="atlas_dev_drift_$$"
 
@@ -57,218 +43,44 @@ try:
 except Exception as e:
     print(f"cleanup warning: {e}", file=sys.stderr)
 PYEOF
-  databricks postgres delete-branch "$PROBE_PATH" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-# --- 5a: structural drift (atlas schema diff) --------------------------------
 python - "$PROD_URL" "$SCRATCH" <<'PYEOF'
 import sys, psycopg
 with psycopg.connect(sys.argv[1], autocommit=True) as c:
     c.execute(f'CREATE DATABASE "{sys.argv[2]}" TEMPLATE template0')
 PYEOF
-DEV_URL="postgres://${ENCODED_USER}:${TOKEN}@${HOST}:5432/${SCRATCH}?sslmode=require"
+DEV_URL="postgres://${ENCODED_USER}:***@${HOST}:5432/${SCRATCH}?sslmode=require"
 
-# --- Pro mode: one object-aware diff replaces 5a+5b ---------------------------
-# Pro models functions/views/triggers/etc., so a single schema diff against a
-# desired state that concatenates schema.sql + db/objects (layer order) covers
-# structural AND object drift AND ghosts (live objects not in desired state are
-# reported as DROPs). No probe branch, no replay, no def comparison.
-if [ "${ATLAS_EDITION:-ce}" = "pro" ]; then
-  echo "▶ Pro drift check: object-aware schema diff (prod vs schema.sql + db/objects)"
-  # Desired state built by scripts/build_desired.py (single source of truth;
-  # same builder branch_test.sh uses for the declarative deploy).
-  python scripts/build_desired.py --out "$REPO/.tmp_pro/desired.sql" >/dev/null
-  # All declared schemas, not just public: objects moved into auth/authz/
-  # employee/employee_data were invisible to a hard-coded --schema public
-  # (lb_schema_args = public + every CREATE SCHEMA in db/schema).
-  PRO_SCHEMA_ARGS=()
-  while read -r _f _s; do [ -n "${_s:-}" ] && PRO_SCHEMA_ARGS+=("$_f" "$_s"); done < <(lb_schema_args)
-  PRO_OUT=$("$ATLAS_BIN" schema diff \
-    --from "$PROD_URL" \
-    --to "file://${REPO}/.tmp_pro/desired.sql" \
-    --dev-url "$DEV_URL" \
-    "${PRO_SCHEMA_ARGS[@]}" \
-    --exclude "public.schema_migrations" \
-    --exclude "public.grant_*" 2>&1) || {
-    echo "✗ atlas schema diff (Pro) failed:"; printf '%s\n' "$PRO_OUT"; exit 2;
-  }
-  # ponytail: platform-owned event triggers (on_create_*) cannot be --exclude'd
-  # (DB-level resources); filter the known block. Revisit if Lakebase adds more.
-  # (|| true: an all-noise diff leaves grep with zero output = exit 1.)
-  PRO_OUT="$(printf '%s\n' "$PRO_OUT" | grep -vE 'on_create_|DROP EVENT TRIGGER' || true)"
-  if [ -z "$(printf '%s' "$PRO_OUT" | tr -d '[:space:]')" ]; then
-    echo "✓ no drift (Pro object-aware diff)"
-    exit 0
-  fi
-  echo "✗ drift detected (statements to move prod to desired state):"
-  printf '%s\n' "$PRO_OUT" | sed 's/^/    /'
-  exit 1
-fi
-
-DESIRED="$(mktemp -d)/desired.sql"
-# schema-only desired state via the ONE builder (audit finding 12). python is
-# native: convert the MSYS mktemp path first (see gen_migration.sh).
-_win="$DESIRED"; command -v cygpath >/dev/null 2>&1 && _win=$(cygpath -m "$DESIRED")
-python scripts/build_desired.py --schema-only --out "$_win" >/dev/null
-[ -s "$DESIRED" ] || { echo "✗ db/schema is empty" >&2; exit 2; }
-command -v cygpath >/dev/null 2>&1 && DESIRED=$(cygpath -m "$DESIRED")  # Windows: file:// URLs need native paths
-
-echo "▶ 5a structural drift: prod vs db/schema (all declared schemas)"
-# Schemas under management = public + every CREATE SCHEMA in db/schema/*.sql
-# (hard-coding public only hid every non-public schema from drift detection -
-# verified bug: a new table in new_shared_schema was invisible).
-# A schema used in db/schema but not declared there fails planning loudly.
-SCHEMA_ARGS=(--schema public)
-while read -r _s; do
-  [ -n "$_s" ] && [[ " ${SCHEMA_ARGS[*]} " != *" $_s "* ]] && SCHEMA_ARGS+=(--schema "$_s")
-done < <(grep -rhoiE 'CREATE[[:space:]]+SCHEMA[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?[a-z_]+' db/schema \
-  | awk '{print $NF}' | tr 'A-Z' 'a-z' | sort -u)
-# tooling metadata (Lakebase __db_system, Atlas ledger, infra, legacy
-# schema_migrations) is not app schema and must not read as drift.
-STRUCT_OUT="$("$ATLAS_BIN" schema diff \
+echo "▶ drift check: object-aware schema diff (prod vs schema.sql + db/objects)"
+# Desired state built by scripts/build_desired.py (single source of truth;
+# same builder branch_test.sh uses for the declarative deploy). Atlas models
+# functions/views/triggers/etc., so one schema diff covers structural AND
+# object drift AND ghosts (live objects not in desired state report as DROPs).
+python scripts/build_desired.py --out "$REPO/.tmp_pro/desired.sql" >/dev/null
+# All declared schemas, not just public: objects moved into auth/authz/
+# employee/employee_data were invisible to a hard-coded --schema public
+# (lb_schema_args = public + every CREATE SCHEMA in db/schema).
+SCHEMA_ARGS=()
+while read -r _f _s; do [ -n "${_s:-}" ] && SCHEMA_ARGS+=("$_f" "$_s"); done < <(lb_schema_args)
+OUT=$("$ATLAS_BIN" schema diff \
   --from "$PROD_URL" \
-  --to "file://${DESIRED}" \
+  --to "file://${REPO}/.tmp_pro/desired.sql" \
   --dev-url "$DEV_URL" \
   "${SCHEMA_ARGS[@]}" \
-  --exclude "public.schema_migrations" 2>&1)" || {
-  echo "✗ atlas schema diff failed:"; printf '%s\n' "$STRUCT_OUT"; exit 2;
+  --exclude "public.schema_migrations" \
+  --exclude "public.grant_*" 2>&1) || {
+  echo "✗ atlas schema diff failed:"; printf '%s\n' "$OUT"; exit 2;
 }
-STRUCT_DRIFT=0
-# CE 5a false positives: code objects (functions, procedures, views, triggers,
-# trigger functions) deployed by migrations are not declared in schema.sql, so
-# the structural diff emits DROPs for them forever. They are policed properly
-# by 5b (definition compare + ghosts), so 5a filters every code-object DROP
-# and keeps only table/index/schema-level statements.
-STRUCT_OUT="$(printf '%s\n' "$STRUCT_OUT" \
-  | grep -viE 'drop .* (function|procedure|view|trigger|event trigger)|DROP (FUNCTION|PROCEDURE|VIEW|TRIGGER|EVENT TRIGGER)' || true)"
-if [ -z "$(printf '%s' "$STRUCT_OUT" | tr -d '[:space:]')" ]; then
-  echo "  clean: no structural drift"
-else
-  STRUCT_DRIFT=1
-  echo "  DRIFT DETECTED (statements to move prod to desired state):"
-  printf '%s\n' "$STRUCT_OUT" | sed 's/^/    /'
+# ponytail: platform-owned event triggers (on_create_*) cannot be --exclude'd
+# (DB-level resources); filter the known block. Revisit if Lakebase adds more.
+# (|| true: an all-noise diff leaves grep with zero output = exit 1.)
+OUT="$(printf '%s\n' "$OUT" | grep -vE 'on_create_|DROP EVENT TRIGGER' || true)"
+if [ -z "$(printf '%s' "$OUT" | tr -d '[:space:]')" ]; then
+  echo "✓ no drift"
+  exit 0
 fi
-
-# --- 5b: object drift (probe branch + def comparison) ------------------------
-echo "▶ 5b object drift: prod vs db/objects replay"
-databricks postgres delete-branch "$PROBE_PATH" >/dev/null 2>&1 || true
-lb_wait_branch_gone "$PROBE_PATH" || { echo "✗ stale ${PROBE_BRANCH} did not delete in time" >&2; exit 2; }
-lb_create_branch "$LAKEBASE_PROJECT" "$PROBE_BRANCH" "$SOURCE_BRANCH" 86400
-lb_wait_endpoint "$PROBE_EP" || { echo "✗ probe endpoint not ready" >&2; exit 2; }
-PROBE_HOST="$(lb_host "$PROBE_EP")"
-PROBE_TOKEN="$(lb_token "$PROBE_EP")"
-echo "::add-mask::${PROBE_TOKEN}"
-
-python scripts/apply_objects.py \
-  --host "$PROBE_HOST" --port 5432 --dbname databricks_postgres \
-  --user "${DATABRICKS_PG_USER}" --password "$PROBE_TOKEN" \
-  --sslmode require --objects-root db/objects >/dev/null || {
-  _orc=$?
-  if [ "$_orc" = 1 ]; then
-    echo "✗ object drift: db/objects does not apply cleanly on a prod fork (ghost/retirement output above)" >&2; exit 1
-  fi
-  echo "✗ object replay failed on the probe branch (infra error - see output above)" >&2; exit 2
-}
-
-PROBE_URL="postgres://${ENCODED_USER}:${PROBE_TOKEN}@${PROBE_HOST}:5432/databricks_postgres?sslmode=require"
-# All declared schemas (lb_schema_args): the def comparison previously scanned
-# ONLY public, so objects in auth/authz/employee/employee_data were never
-# compared and a deleted one left an unflagged ghost.
-SCHEMA_LIST="$(lb_schema_args | awk '{print $2}' | paste -sd,)"
-DEF_DIFF="$(python - "$PROD_URL" "$PROBE_URL" "$REPO" "$SCHEMA_LIST" <<'PYEOF'
-import sys, re, difflib, psycopg
-from pathlib import Path
-
-SCHEMAS = [s for s in sys.argv[4].split(",") if s]
-
-# Objects owned by extensions (databricks_auth etc.) are not ours to police.
-DEFS_SQL = """
-SELECT 'function', pg_get_functiondef(p.oid), p.proname::text
-  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
- WHERE n.nspname = ANY(%(schemas)s) AND p.prokind = 'f'
-   AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')
-UNION ALL
-SELECT 'procedure', pg_get_functiondef(p.oid), p.proname::text
-  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
- WHERE n.nspname = ANY(%(schemas)s) AND p.prokind = 'p'
-   AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e')
-UNION ALL
-SELECT 'view', pg_get_viewdef(c.oid, true), c.relname::text
-  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
- WHERE c.relkind = 'v' AND n.nspname = ANY(%(schemas)s)
-   AND NOT EXISTS (
-     SELECT 1 FROM pg_rewrite r JOIN pg_depend d
-       ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass
-      WHERE r.ev_class = c.oid AND d.deptype = 'e')
-UNION ALL
-SELECT 'trigger', pg_get_triggerdef(t.oid), t.tgname::text
-  FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
-   JOIN pg_namespace n ON n.oid = c.relnamespace
- WHERE NOT t.tgisinternal AND n.nspname = ANY(%(schemas)s)
-   AND NOT EXISTS (SELECT 1 FROM pg_depend d
-                    WHERE d.objid = t.oid AND d.classid = 'pg_trigger'::regclass AND d.deptype = 'e')
-"""
-
-def dump(url):
-    with psycopg.connect(url) as c:
-        rows = c.execute(DEFS_SQL, {"schemas": SCHEMAS}).fetchall()
-    lines = sorted(f"{k}|{' '.join(d.split())}" for k, d, n in rows if d)
-    names = {(k, n.lower()) for k, d, n in rows if d}
-    return lines, names
-
-# Names the repo declares anywhere under db/objects/ — one source of truth:
-# apply_objects.declared_objects (same regex the deploy-time ghost check uses).
-import sys as _sys
-_sys.path.insert(0, str(Path(sys.argv[3]) / "scripts"))
-from apply_objects import declared_objects
-declared = declared_objects(Path(sys.argv[3]) / "db" / "objects")
-repo = Path(sys.argv[3])
-
-# Reviewed ignore list: names on production that are managed outside
-# db/objects (e.g. legacy rbac helpers) and must not read as ghosts.
-ig = repo / "db/objects/drift_ignore.jsonl"
-if ig.is_file():
-    import json as _json
-    for i, raw in enumerate(ig.read_text(encoding="utf-8").splitlines(), 1):
-        line = raw.strip()
-        if not line:
-            continue
-        try:
-            obj = _json.loads(line)
-            name = str(obj["object"]).strip().lower()
-            assert obj.get("reason"), "reason required"
-        except Exception as e:
-            raise SystemExit(f"drift_ignore.jsonl:{i}: bad entry ({e}); expected {{\"object\", \"reason\"}}") from e
-        declared.add(name)
-
-prod_lines, prod_names = dump(sys.argv[1])
-probe_lines, _ = dump(sys.argv[2])
-
-out, drift = [], 0
-diff = list(difflib.unified_diff(prod_lines, probe_lines, "production", "git-replay", lineterm=""))
-if diff:
-    drift = 1
-    out.append("definition mismatch (production | git-replay; '-'=prod, '+'=repo replay):")
-    out += diff
-ghosts = sorted(f"{k}: {n}" for k, n in prod_names if n not in declared)
-if ghosts:
-    drift = 1
-    out.append("ghost objects on production, declared nowhere in db/objects:")
-    out += [f"  {g}" for g in ghosts]
-if drift:
-    print("\n".join(out))
-    sys.exit(1)
-PYEOF
-)" && OBJ_DRIFT=0 || OBJ_DRIFT=$?
-
-if [ "$OBJ_DRIFT" = 0 ]; then
-  echo "  clean: prod object definitions match the repo replay"
-else
-  echo "  DRIFT DETECTED (production | git-replay; '-'=prod-only, '+'=what the repo objects produce):"
-  printf '%s\n' "$DEF_DIFF" | sed 's/^/    /'
-fi
-
-[ "$STRUCT_DRIFT" = 0 ] && [ "$OBJ_DRIFT" = 0 ] && { echo "✓ no drift"; exit 0; }
-echo "✗ drift detected (structural=$STRUCT_DRIFT objects=$OBJ_DRIFT)"
+echo "✗ drift detected (statements to move prod to desired state):"
+printf '%s\n' "$OUT" | sed 's/^/    /'
 exit 1
