@@ -55,6 +55,7 @@ jobs:
       TARGET_BRANCH: ${{ needs.resolve.outputs.database }}
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      ATLAS_TOKEN: ${{ secrets.ATLAS_TOKEN }}   # atlas CLI license check (Pro)
     steps:
       - uses: actions/checkout@v4
 
@@ -72,10 +73,9 @@ jobs:
           echo "DATABRICKS_HOST=$HOST" >> "$GITHUB_ENV"
           echo "DATABRICKS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
-      # Pro mode: official Atlas install with the bot token (grant cached for
+      # Official Atlas install with the bot token (grant cached for
       # offline access). The script steps use this binary via ATLAS_BIN.
-      - name: Atlas Cloud setup (Pro only)
-        if: vars.ATLAS_EDITION == 'pro'
+      - name: Atlas Cloud setup
         uses: ariga/setup-atlas@v0
         with:
           cloud-token: ${{ secrets.ATLAS_CLOUD_TOKEN }}
@@ -113,19 +113,12 @@ jobs:
         run: pip3 install "psycopg[binary]==3.2.9" "pytest==8.3.5"
 
       - name: Deploy Infrastructure Assets via DABs
-        env:
-          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
-          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
         run: databricks bundle deploy -t "$WORKSPACE"
 
-      - name: Install Atlas CE (pinned)
-        uses: ./.github/actions/setup-atlas
-
-      # Pro mode: push the migration dir to the Atlas Cloud Schema
+      # Push the migration dir to the Atlas Cloud Schema
       # Registry (official CI guide step 2) so every deploy is versioned in
-      # the cloud. Skipped under CE.
-      - name: Push migration dir to Atlas Cloud registry (Pro only)
-        if: vars.ATLAS_EDITION == 'pro'
+      # the cloud.
+      - name: Push migration dir to Atlas Cloud registry
         uses: ariga/atlas-action/migrate/push@v1
         with:
           dir: 'file://db/migrations'
@@ -151,8 +144,7 @@ jobs:
       - name: Pre-deploy recovery branch (PITR fork of the environment database)
         if: env.TARGET_BRANCH == 'production'
         env:
-          ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
-          ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
+          DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
         run: |
           . scripts/lib.sh
           RB="recovery-${{ github.run_id }}"
@@ -163,31 +155,17 @@ jobs:
           echo "recovery_branch=${RB}" >> "$GITHUB_OUTPUT"
         id: recovery
 
-      # Pro track: the OFFICIAL Atlas apply action against the minted
+      # The OFFICIAL Atlas apply action against the minted
       # credential — Atlas owns the deployment, not our wrapper.
-      - name: Apply migrations via the official Atlas action (Pro track)
-        if: vars.ATLAS_EDITION == 'pro'
+      - name: Apply migrations via the official Atlas action
         uses: ariga/atlas-action/migrate/apply@v1
         with:
           dir: 'file://db/migrations'
           url: '${{ steps.cred.outputs.url }}'
-          tx-mode: all   # one transaction for the whole pending batch (CE script parity)
+          tx-mode: all   # one transaction for the whole pending batch
 
-      - name: Replay objects + run smoke tests (Pro track)
-        if: vars.ATLAS_EDITION == 'pro'
+      - name: Replay objects + run smoke tests
         env:
-          ATLAS_EDITION: pro
           DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
-          ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
           SKIP_MIGRATIONS: "1"
-        run: ./scripts/branch_test.sh
-
-      # CE track (fallback): our script — same ledger, --tx-mode all,
-      # objects replay, tests, one entrypoint.
-      - name: Apply migrations + objects (CE track)
-        if: vars.ATLAS_EDITION != 'pro'
-        env:
-          ATLAS_EDITION: ce
-          DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
-          ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
         run: ./scripts/branch_test.sh
