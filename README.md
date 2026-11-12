@@ -2,7 +2,7 @@
 
 Architecture and design rationale: [docs/DESIGN.md](docs/DESIGN.md). This README is the operating manual.
 
-CI/CD pipeline for Databricks Lakebase Postgres, built on **Atlas Pro**: declarative desired state, official GitHub Actions, Schema Registry. CI installs the Pro binary via `ariga/setup-atlas@v0` with an Atlas Cloud token; every apply lands in the same `atlas_schema_revisions` ledger.
+CI/CD pipeline for Databricks Lakebase Postgres, built on **Atlas Pro**: declarative desired state, official GitHub Actions. CI installs the Pro binary via `ariga/setup-atlas@v0`; every apply lands in the same `atlas_schema_revisions` ledger.
 
 ```
 SOURCE (Git)                       DEPLOYMENT                                   DATABASE (Lakebase)
@@ -85,7 +85,7 @@ The only Lakebase-specific glue is credential minting (`generate-database-creden
 
 ## Database platform facts (verified live)
 
-- Lakebase Postgres runs **PostgreSQL 17.11**: CI dev containers pinned to `postgres:17`, dev-urls `docker://postgres/17/dev`.
+- Lakebase Postgres runs **PostgreSQL 17.11**: scratch databases are created from `template0` inside the branch, so Atlas plans against the same engine/version as production.
 - No static DB URL exists or should. Pattern: SP OAuth secret (up to 730 days) -> 1-hour workspace token -> 1-hour database credential; username = SP client id = the SP's Postgres role. See [docs/IDENTITIES.md](docs/IDENTITIES.md).
 - Lakebase platform-owned objects (`__db_system` schema, `on_create_*`/`on_drop_*` event triggers) are not managed by this repo. Atlas cannot exclude event triggers from plans (verified v1.3.5: `--exclude` does not match them, `atlas.hcl` `skip` blocks are lint-analyzer only), so `apply_desired.py` filters them at execution while Atlas still owns the plan. A schema allowlist (`public` + every declared schema) keeps platform schemas out of every diff.
 
@@ -195,7 +195,7 @@ A label added after a run does not re-fire it. Re-trigger with a fresh event: an
 
 `.github/workflows/schema-drift-monitor.yml` runs daily. The probe (`scripts/check_drift.sh`) runs ONE object-aware `atlas schema diff` of the live branch vs the full desired state (`db/schema/*.sql` + `db/objects`, all declared schemas, excluding tooling schemas). It covers structural drift, object drift and ghosts (objects declared nowhere in `db/objects/`, minus `drift_ignore.jsonl`). On drift: fails, and opens/updates a `schema-drift` GitHub issue with the full report. A probe ERROR (auth, connectivity) opens a distinct issue; it is not drift.
 
-This is detection, not managed monitoring: once a day, no changelog/ERD/lineage. Pro's Schema Monitoring product is the upgrade path (register the production DB in the Atlas Cloud portal). Manual run against any branch:
+This is detection, not managed monitoring: once a day, no changelog/ERD/lineage. Manual run against any branch:
 
 ```
 LAKEBASE_PROJECT=<id> DATABRICKS_PG_USER=<role> \
@@ -220,7 +220,6 @@ Repository secrets:
 | `DATABRICKS_TOKEN` | PAT or SP token with Lakebase access |
 | `LAKEBASE_PROJECT` | core-app-db |
 | `DATABRICKS_PG_USER` | the Lakebase Postgres role that runs the pipeline |
-| `ATLAS_CLOUD_TOKEN` | Atlas Cloud API token for `ariga/setup-atlas@v0` | portal.ariga.io |
 | `ATLAS_TOKEN` | Atlas Cloud API token for the atlas CLI license check (the CLI session token is NOT accepted, verified live) | portal.ariga.io |
 
 Auth today is the static `DATABRICKS_TOKEN`; the database password is still self-minted per run (below). The OIDC switchover (3 SPs, federation policies, subject strings) is specced in [docs/IDENTITIES.md](docs/IDENTITIES.md); blocked because federation policies are account-level API, beyond Free Edition.
@@ -244,10 +243,6 @@ Source: [atlasgo.io/guides/ci-platforms/github-versioned](https://atlasgo.io/gui
 
 | Guide step | This repo | Why |
 | --- | --- | --- |
-| Bot token as `ATLAS_CLOUD_TOKEN` secret | done (value lives only in the ignored `.env.py`) | official naming kept |
-| `ariga/setup-atlas@v0` with `cloud-token` | `pr-validation.yml` | official install + auth path |
-| `ariga/atlas-action/migrate/lint@v1` | `pr-validation.yml`; dev-database = postgres:17 service container | native lint report on the PR |
-| `migrate/push` to the Schema Registry on merge | `cd-promotion.yml` | cloud versioning of the dir |
 | `ariga/atlas-action/migrate/apply@v1` | `cd-promotion.yml`, against a minted 1-hour credential | no static DB URL |
 | Local `docker://postgres` dev-database | Lakebase `template0` scratch inside the branch | same engine/version as production, no Docker |
 
@@ -265,6 +260,5 @@ Source: [atlasgo.io/guides/ci-platforms/github-versioned](https://atlasgo.io/gui
 | --- | --- | --- |
 | 1 | Ownership | Assign CODEOWNERS to a team instead of individuals; mark the `production` Lakebase branch protected (skipped for this POC by decision) |
 | 2 | OIDC credentials | Switch the static `DATABRICKS_TOKEN` to workload federation with the three designated SPs (SP-CI, SP-CD, SP-MONITOR). SPs, Lakebase roles and Postgres grants are DONE (docs/IDENTITIES.md); blocked on federation policies, which need account-level API beyond Free Edition |
-| 3 | Schema Monitoring | Register production in Atlas Cloud after licensing (manual, post-license) |
 
 Carried from v1, still open: RBAC as code, AI-impact review (AI Gateway), multi-environment promotion with the platform team.
