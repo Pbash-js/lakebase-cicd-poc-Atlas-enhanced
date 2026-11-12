@@ -73,12 +73,9 @@ jobs:
           echo "DATABRICKS_HOST=$HOST" >> "$GITHUB_ENV"
           echo "DATABRICKS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
-      # Official Atlas install with the bot token (grant cached for
-      # offline access). The script steps use this binary via ATLAS_BIN.
-      - name: Atlas Cloud setup
+      # Official Atlas install. The script steps use the binary via ATLAS_BIN.
+      - name: Atlas setup (installs the Pro CLI binary)
         uses: ariga/setup-atlas@v0
-        with:
-          cloud-token: ${{ secrets.ATLAS_CLOUD_TOKEN }}
 
       - name: Validate target branch input (manual runs only)
         if: github.event_name == 'workflow_dispatch'
@@ -114,16 +111,6 @@ jobs:
 
       - name: Deploy Infrastructure Assets via DABs
         run: databricks bundle deploy -t "$WORKSPACE"
-
-      # Push the migration dir to the Atlas Cloud Schema
-      # Registry (official CI guide step 2) so every deploy is versioned in
-      # the cloud.
-      - name: Push migration dir to Atlas Cloud registry
-        uses: ariga/atlas-action/migrate/push@v1
-        with:
-          dir: 'file://db/migrations'
-          dev-url: 'docker://postgres/17/dev?search_path=public'
-          dir-name: 'lakebase-cicd-poc'
 
       # Credential minting — the established Lakebase service-principal pattern:
       # long-lived SP OAuth secret -> 1h workspace token -> 1h database

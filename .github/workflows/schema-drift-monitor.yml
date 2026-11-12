@@ -15,11 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Official Atlas install with the bot token.
-      - name: Atlas Cloud setup
+      # Official Atlas install; the script steps use the binary via ATLAS_BIN.
+      - name: Atlas setup (installs the Pro CLI binary)
         uses: ariga/setup-atlas@v0
-        with:
-          cloud-token: ${{ secrets.ATLAS_CLOUD_TOKEN }}
 
       - name: Install Databricks CLI (pinned)
         uses: databricks/setup-cli@v1.22.1
