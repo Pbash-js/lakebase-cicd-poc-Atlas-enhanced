@@ -20,10 +20,6 @@ fi
 cat > .env.local <<EOF
 export LAKEBASE_PROJECT="$PROJECT"
 export DATABRICKS_PG_USER="$ROLE"
-# Local default: Pro declarative inner loop (branch_test converges the branch
-# to desired state without a migration). CI/CD ignore this — GITHUB_ACTIONS
-# forces the versioned path; 'ce' here restores the migrations-first loop.
-export ATLAS_EDITION=pro
 EOF
 grep -q "^\.env.local$" .gitignore 2>/dev/null || echo ".env.local" >> .gitignore
 echo "✓ wrote .env.local (LAKEBASE_PROJECT=$PROJECT, DATABRICKS_PG_USER=$ROLE)"
