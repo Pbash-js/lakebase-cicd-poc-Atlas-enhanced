@@ -2,7 +2,7 @@
 
 Status: implemented. Prose states the design as built; the repo is the source of truth for code.
 
-Atlas Pro carries the pipeline end to end: the declarative desired state, the official GitHub Actions and the Schema Registry. CI installs the Pro binary via `ariga/setup-atlas@v0` with an Atlas Cloud token. Every apply lands in the same `atlas_schema_revisions` ledger.
+Atlas Pro carries the pipeline end to end: the declarative desired state and the official GitHub Actions. CI installs the Pro binary via `ariga/setup-atlas@v0`. Every apply lands in the same `atlas_schema_revisions` ledger.
 
 ---
 
@@ -111,7 +111,7 @@ docs/
 
 ## 4. Engine: Atlas Pro
 
-Pro unlocks with `ATLAS_TOKEN` (Atlas Cloud API token for the atlas CLI). In CI, the binary itself is installed by `ariga/setup-atlas@v0` using a separate `ATLAS_CLOUD_TOKEN` secret. Locally, an `atlas login` session unlocks everything.
+Pro unlocks with `ATLAS_TOKEN` (Atlas Cloud API token for the atlas CLI license check). In CI, the binary itself is installed by `ariga/setup-atlas@v0`. Locally, an `atlas login` session unlocks everything.
 
 ### 4.1 The exact Atlas commands
 
@@ -143,12 +143,9 @@ Which path `branch_test.sh` takes:
 
 | Atlas capability | Where | Role |
 | --- | --- | --- |
-| `ariga/setup-atlas@v0` (with `ATLAS_CLOUD_TOKEN`) | `pr-validation.yml`, `cd-promotion.yml`, `schema-drift-monitor.yml` | Installs the Pro binary; the scripts use it as `ATLAS_BIN=atlas` |
-| `ariga/atlas-action/migrate/lint` | `pr-validation.yml` | PR gate: parsed analyzers, native report on the PR (in addition to the `--latest 1` lint inside the plan check) |
-| `ariga/atlas-action/migrate/push` | `cd-promotion.yml` | Pushes the migration directory to the Atlas Schema Registry: cloud ledger, ERD, lineage |
+| `ariga/setup-atlas@v0` | `pr-validation.yml`, `cd-promotion.yml`, `schema-drift-monitor.yml` | Installs the Pro binary; the scripts use it as `ATLAS_BIN=atlas` |
 | `ariga/atlas-action/migrate/apply` (`tx-mode: all`) | `cd-promotion.yml` | Official versioned apply against the minted credential: Atlas, not our wrapper, owns the deployment |
 | `atlas schema apply --auto-approve` | Rejected, never used | Would be the one-step declarative apply; unusable on Lakebase (platform constraint below). `apply_desired.py` replaces it: Atlas plans and orders, our executor filters platform statements and runs the rest in one transaction |
-| Atlas Cloud monitoring | Post-license, manual | Register the production database: continuous drift, changelog, ERD, lineage. Until then the scheduled probe (`schema-drift-monitor.yml`) covers detection, once daily |
 
 **Where the boundaries sit**
 
@@ -175,7 +172,7 @@ The migration pipeline is the audit spine and runs on every PR and deploy:
 
 One strategy behind one interface (`check_drift.sh`): a single object-aware `atlas schema diff` against the full desired state (all declared schemas) covers structural drift, object drift and ghost objects (live objects declared nowhere in `db/objects/` or `drift_ignore.jsonl`; extension-owned objects, `deptype='e'`, never count).
 
-Exit codes: 0 clean, 1 drift, 2 probe error. The scheduled workflow (`schema-drift-monitor.yml`) opens or updates a `schema-drift` issue with the full report; probe errors raise a distinct issue. Pro's Schema Monitoring product is the upgrade path after licensing.
+Exit codes: 0 clean, 1 drift, 2 probe error. The scheduled workflow (`schema-drift-monitor.yml`) opens or updates a `schema-drift` issue with the full report; probe errors raise a distinct issue.
 
 ## 7. Day zero
 
@@ -192,7 +189,7 @@ Exit codes: 0 clean, 1 drift, 2 probe error. The scheduled workflow (`schema-dri
 - **Human/local:** `databricks auth login` OAuth profile; no tokens in config files.
 - **CI/CD:** service principals (SP-CI, SP-CD, SP-MONITOR) authenticating via OAuth M2M client credentials, minting a 1-hour workspace token per run, then a 1-hour Postgres credential from `generate-database-credential`. The Postgres password is never long-lived. Subject strings and the console steps: `docs/IDENTITIES.md`.
 - **Why not OIDC federation:** federation policies need account-level API, unavailable on Free Edition; OAuth M2M secrets work at workspace level. M2M is the implemented pattern.
-- **Atlas Pro:** CI uses two secrets: `ATLAS_CLOUD_TOKEN` (for `ariga/setup-atlas@v0` to install the binary) and `ATLAS_TOKEN` (for the atlas CLI license check). Both are minted at portal.ariga.io. A local `atlas login` session unlocks everything locally. The CLI session token is not accepted as `ATLAS_TOKEN`.
+- **Atlas Pro:** CI uses one secret: `ATLAS_TOKEN` (for the atlas CLI license check), minted at portal.ariga.io; the binary is installed by `ariga/setup-atlas@v0`. A local `atlas login` session unlocks everything locally. The CLI session token is not accepted as `ATLAS_TOKEN`.
 
 ## 9. Recovery
 
@@ -209,10 +206,8 @@ Exit codes: 0 clean, 1 drift, 2 probe error. The scheduled workflow (`schema-dri
 
 | Item | State | Blocker |
 | --- | --- | --- |
-| Atlas Cloud bot token | configured; official actions green in CI | closed |
 | OIDC identities | SPs, Lakebase roles, Postgres grants done; subject strings in `docs/IDENTITIES.md` | federation policies need account-level API |
 | Ownership | branch protection live on all four baselines; CODEOWNERS in place | closed for the POC (single owner) |
-| Schema Monitoring | register production in Atlas Cloud after licensing | manual step, post-license |
 | Multi-environment promotion | proven through dev -> qa -> stage (section 2) | closed for the POC; prod promotion pending real workspaces |
 | Endpoint hygiene automation | manual disable/enable per CD wave (operational notes, section 2) | small GC workflow to disable spent `pr-<n>` endpoints |
 | Capacity-error classification | endpoint-capacity failures surface as plan-drift in the plan check | classify as infra error (exit 2 semantics) with a retry hint |
