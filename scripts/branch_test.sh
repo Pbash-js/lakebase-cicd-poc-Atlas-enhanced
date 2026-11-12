@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Deploy entrypoint for this repo (Atlas-enhanced): the migrate slot runs
-# Atlas CE diff/apply + atlas_schema_revisions (diverges from the accelerator's
-# deploy_db.sh by design). Local deploy: Pro declarative or versioned apply.
+# Deploy entrypoint for this repo (Atlas-enhanced): local deploys run the Pro
+# declarative apply; CI/CD run the versioned path (migrations + objects).
 #
 # Lakebase branch deploy: mint OAuth credential -> migrations -> objects -> tests.
 #
@@ -108,13 +107,14 @@ echo "::add-mask::${TOKEN}"   # never leak the runtime credential in logs
 cd "$(dirname "$0")/.."
 
 # --- Pro declarative inner loop ---------------------------------------------
-# Local Pro runs (GITHUB_ACTIONS unset) converge the branch to the FULL
-# desired state (db/schema + db/objects) with ONE `atlas schema apply`:
+# Local runs (GITHUB_ACTIONS unset) converge the branch to the FULL
+# desired state (db/schema + db/objects) in ONE transaction:
 # schema changes test without generating a migration first; the migration is
-# only frozen (gen_migration.sh) before the PR. CI/CD never take this path
-# (GITHUB_ACTIONS=true): the rehearsal must exercise the versioned artifacts,
-# and production must never be declaratively drifted to desired state.
-if [ "${ATLAS_EDITION:-ce}" = "pro" ] && [ "${GITHUB_ACTIONS:-}" != "true" ]; then
+# only frozen (gen_migration.sh) before the PR. CI/CD always take the
+# versioned path (GITHUB_ACTIONS=true): the rehearsal must exercise the
+# versioned artifacts, and production must never be declaratively drifted
+# to desired state.
+if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
   ATLAS_BIN="${ATLAS_BIN:-atlas}"
   command -v "$ATLAS_BIN" >/dev/null 2>&1 || { echo "✗ atlas CLI not found (set ATLAS_BIN)"; exit 1; }
   echo "▶ Pro declarative: schema apply (db/schema + db/objects -> ${TARGET_BRANCH})"
@@ -176,7 +176,7 @@ elif [ "$_rc" != 0 ]; then
   exit "$_rc"
 fi
 
-fi   # end CE/versioned track (see Pro declarative apply above)
+fi   # end versioned track (CI/CD)
 
 if [ "${SKIP_TESTS:-}" = 1 ]; then
   echo "▶ SKIP_TESTS=1 — tests skipped"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Atlas-native migration apply engine (Community Edition).
+# Atlas-native migration apply engine.
 # The ledger is atlas_schema_revisions, maintained entirely by Atlas. Never
 # write to it by hand.
 #
@@ -37,7 +37,7 @@ ls "${ATLAS_MIGRATIONS_DIR:-db/migrations}"/*.sql >/dev/null 2>&1 \
 
 # Out-of-band integrity check before touching the target: the migration dir
 # must be internally consistent (atlas.sum matches the files, no rebase or
-# missing files). Works in CE and Pro.
+# missing files).
 echo "▶ atlas validate (dir integrity)"
 "$ATLAS_BIN" migrate validate --dir "$DIR" \
   || { echo "✗ migration directory failed validation (tampered or rebased history)"; exit 1; }

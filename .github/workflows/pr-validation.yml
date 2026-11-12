@@ -14,13 +14,11 @@ jobs:
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_CI }}   # PR jobs hold only the CI token; DATABRICKS_TOKEN is an environment secret (CD jobs only)
       LAKEBASE_PROJECT: ${{ secrets.LAKEBASE_PROJECT }}
       DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
-      ATLAS_EDITION: ${{ vars.ATLAS_EDITION || 'ce' }}
-      ATLAS_TOKEN: ${{ vars.ATLAS_EDITION == 'pro' && secrets.ATLAS_TOKEN || '' }}
-      ATLAS_BIN: ${{ vars.ATLAS_EDITION == 'pro' && 'atlas' || '/tmp/atlas' }}   # Pro: setup-atlas binary; CE: pinned download
+      ATLAS_TOKEN: ${{ secrets.ATLAS_TOKEN }}   # atlas CLI license check (Pro)
     services:
       # Official Atlas CI pattern (atlasgo.io/guides/ci-platforms/github-versioned):
       # a throwaway postgres container serves as the dev-database for lint
-      # analysis. Only used by the Pro lint step; idle under CE.
+      # analysis.
       postgres:
         image: postgres:17
         env:
@@ -42,19 +40,11 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}   # commit on the PR branch, not the merge ref
           fetch-depth: 0
 
-      - name: Install Atlas CE (pinned)
-        uses: ./.github/actions/setup-atlas
-
-      # Pro mode: official Atlas Cloud integration — installs Atlas with the
-      # bot token (grant cached for offline access) and posts a native lint
-      # report on the PR. Skipped entirely under CE.
-      - name: Atlas Cloud setup + native lint (Pro only)
-        if: vars.ATLAS_EDITION == 'pro'
+      - name: Atlas Cloud setup
         uses: ariga/setup-atlas@v0
         with:
           cloud-token: ${{ secrets.ATLAS_CLOUD_TOKEN }}
-      - name: Atlas Cloud lint report (Pro only)
-        if: vars.ATLAS_EDITION == 'pro'
+      - name: Atlas Cloud lint report
         uses: ariga/atlas-action/migrate/lint@v1
         with:
           dir: 'file://db/migrations'
@@ -94,30 +84,6 @@ jobs:
               EXIT=1
             fi
           done
-          exit $EXIT
-
-      - name: Destructive-change gate (regex lint on NEW migrations; not a parser)
-        env:
-          BASE: ${{ github.base_ref }}
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
-        run: |
-          git fetch -q origin "${BASE}"
-          EXIT=0
-          for f in $(git --no-pager diff --no-renames --name-only "origin/${BASE}...HEAD" -- db/migrations); do
-            [ "$f" = "db/migrations/atlas.sum" ] && continue
-            git cat-file -e "origin/${BASE}:$f" 2>/dev/null && continue   # only NEW files
-            if grep -inE 'DROP[[:space:]]+(TABLE|SCHEMA|COLUMN)|TRUNCATE([[:space:]]|;|$)' "$f"; then
-              echo "::error::$f contains destructive DDL (DROP TABLE/SCHEMA/COLUMN, TRUNCATE): add the 'destructive-approved' label after review, or remove it"
-              EXIT=1
-            fi
-            # CREATE INDEX CONCURRENTLY is impossible under --tx-mode all, so this warns only
-            if grep -iE 'CREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX' "$f" | grep -viqE 'CONCURRENTLY'; then
-              echo "::warning::$f uses a non-concurrent CREATE INDEX: locks writes for the index build duration on large tables"
-            fi
-          done
-          case " $LABELS " in
-            *" destructive-approved "*) echo "destructive-approved label present — destructive DDL allowed"; EXIT=0;;
-          esac
           exit $EXIT
 
       - name: Install Databricks CLI + Python deps

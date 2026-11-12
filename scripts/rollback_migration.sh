@@ -3,13 +3,12 @@
 # `atlas migrate down` (computes the reverse plan and enforces the
 # migrations' pre-revert checks before running it).
 #
-# CE has no `migrate down`: the CE rollback is the pre-deploy recovery
-# branch (forked by cd-promotion before every production apply) or a
-# forward migration. This script refuses to run under CE and refuses
-# production entirely (branch restore, not SQL undo).
+# Production is refused entirely: rollback there is the pre-deploy recovery
+# branch (forked by cd-promotion before every production apply), never
+# in-place SQL undo.
 #
 # Usage: TARGET_BRANCH=<branch> rollback_migration.sh [amount]   (default 1)
-# Requires an authenticated databricks CLI and ATLAS_EDITION=pro.
+# Requires an authenticated databricks CLI.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -19,11 +18,6 @@ TARGET_BRANCH="${TARGET_BRANCH:?set TARGET_BRANCH (never production)}"
 AMOUNT="${1:-1}"
 ATLAS_BIN="${ATLAS_BIN:-atlas}"
 
-if [ "${ATLAS_EDITION:-ce}" != "pro" ]; then
-  echo "✗ atlas migrate down is Pro-only (set ATLAS_EDITION=pro)."
-  echo "  CE rollback: restore the pre-deploy recovery branch, or ship a forward migration."
-  exit 1
-fi
 if [ "$TARGET_BRANCH" = "production" ]; then
   echo "✗ refusing to roll back production in place. Restore the recovery branch instead."
   exit 1
