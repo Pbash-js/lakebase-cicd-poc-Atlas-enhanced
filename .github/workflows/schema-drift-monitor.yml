@@ -30,7 +30,8 @@ jobs:
       - name: Resolve prod environment from config
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_CI }}   # resolver checks availability by NAME; monitor holds only the CI token
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_CI }}   # the CLI/SDK reads this env var
+          DATABRICKS_TOKEN_CD: ${{ secrets.DATABRICKS_TOKEN_CI }}   # resolver checks availability by the CONFIG's secret name; monitor holds only the CI token
         run: |
           pip3 install -q "pyyaml==6.0.2"
           python3 scripts/resolve_env.py prod cd
