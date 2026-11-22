@@ -53,7 +53,7 @@ are generated, only the values change:
    declares `environment: <deploy_env>`. stage/production additionally carry
    required reviewers.
 2. `DATABRICKS_TOKEN_CI` is a repository secret for PR/monitor jobs (today:
-   the same PAT value; after the switchover: SP-CI / SP-MONITOR tokens).
+   the same PAT value; after the switchover: the SP-CI token).
 3. The workflow references already point the right way: pr-validation.yml and
    schema-drift-monitor.yml read `secrets.DATABRICKS_TOKEN_CI`; the CD
    promote job reads `secrets.DATABRICKS_TOKEN` (environment-scoped).
@@ -65,17 +65,19 @@ Lakebase project RBAC per identity, which needs the SP secrets first.
 
 Identity map (client id → role):
 
-## The three identities
+## The two identities
 
 | SP | Application (client) ID | Runs in | Purpose |
 | --- | --- | --- | --- |
-| SP-CI | `eacad5b0-694c-4cf8-b56f-63ec17b92f95` | `pr-validation.yml` | Per-PR rehearsal on `pr-<n>` branches |
+| SP-CI | `eacad5b0-694c-4cf8-b56f-63ec17b92f95` | `pr-validation.yml`, `schema-drift-monitor.yml` | Per-PR rehearsal on `pr-<n>` branches; scheduled drift probe: read production, replay objects on a probe branch |
 | SP-CD | `fc3eb1ed-dbfc-4785-b712-c030294f153f` | `cd-promotion.yml` (environment `production`) | Deploys to production: DAB + migrations + objects + smoke tests |
-| SP-MONITOR | `53648115-4f50-40f3-8372-4e11002cc180` | `schema-drift-monitor.yml` | Daily drift probe: read production, replay objects on a probe branch |
 
 The client IDs are stored as GitHub Actions REPOSITORY VARIABLES (not
-secrets, they are not credentials): `SP_CI_CLIENT_ID`, `SP_CD_CLIENT_ID`,
-`SP_MONITOR_CLIENT_ID`.
+secrets, they are not credentials): `SP_CI_CLIENT_ID`, `SP_CD_CLIENT_ID`.
+
+Consolidation note: SP-MONITOR (`53648115-4f50-40f3-8372-4e11002cc180`,
+role `rol-44hi-tngy944byc`) is retired; its monitor workload runs under
+SP-CI. The SP, its OAuth secret and its Postgres role can be dropped.
 
 ## Federation policies (GitHub OIDC): THE BLOCKED STEP
 
@@ -88,9 +90,8 @@ decorations (login@org-id, repo@repo-id).
 
 | SP | Subject |
 | --- | --- |
-| SP-CI | `repo:Pbash-js@78909321/lakebase-cicd-poc-Atlas-enhanced@1407457562:pull_request` (PR runs) AND `repo:Pbash-js@78909321/lakebase-cicd-poc-Atlas-enhanced@1407457562:ref:refs/heads/main` (scheduled GC runs) |
+| SP-CI | `repo:Pbash-js@78909321/lakebase-cicd-poc-Atlas-enhanced@1407457562:pull_request` (PR runs) AND `repo:Pbash-js@78909321/lakebase-cicd-poc-Atlas-enhanced@1407457562:ref:refs/heads/main` (scheduled GC and drift-monitor runs) |
 | SP-CD | `repo:Pbash-js@78909321/lakebase-cicd-poc-Atlas-enhanced@1407457562:environment:production` |
-| SP-MONITOR | `repo:Pbash-js@78909321/lakebase-cicd-poc-Atlas-enhanced@1407457562:ref:refs/heads/main` (scheduled runs run on main) |
 
 Issuer for all: `https://token.actions.githubusercontent.com`.
 
@@ -121,7 +122,9 @@ Each SP has a Lakebase OAuth role on the project's branches (created via
 | --- | --- | --- |
 | `rol-fbc7-1vaatlr84s` | `fc3eb1ed-dbfc-4785-b712-c030294f153f` | SP-CD |
 | `rol-o5yt-xnl97kra8k` | `eacad5b0-694c-4cf8-b56f-63ec17b92f95` | SP-CI |
-| `rol-44hi-tngy944byc` | `53648115-4f50-40f3-8372-4e11002cc180` | SP-MONITOR |
+
+SP-MONITOR's role (`rol-44hi-tngy944byc`) is retired with the SP; drop it
+when the SP is removed.
 
 New branches fork production and inherit these roles copy-on-write, so one
 setup per project covers every future `pr-*`, sandbox and probe branch.
@@ -134,7 +137,7 @@ role. Created once per project (on `production`):
 
 ```sql
 CREATE ROLE app_pipeline NOLOGIN;
-GRANT app_pipeline TO "<sp-cd-client-id>", "<sp-ci-client-id>", "<sp-monitor-client-id>";
+GRANT app_pipeline TO "<sp-cd-client-id>", "<sp-ci-client-id>";
 ALTER SCHEMA public OWNER TO app_pipeline;
 -- all app objects: tables, sequences, views, functions, procedures, enum types
 -- (pg loop: ALTER ... OWNER TO app_pipeline; skip cloud_admin-owned objects)
@@ -147,7 +150,7 @@ GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO app_pipeline;
 
 Why: `atlas migrate apply` and `apply_objects.py` must ALTER and CREATE
 objects, and PostgreSQL requires ownership for ALTER. With `app_pipeline`
-as owner and all three SPs as members (INHERIT default), every pipeline
+as owner and both SPs as members (INHERIT default), every pipeline
 identity has exactly the DDL rights it needs, and the human owner
 (the project owner's identity) is also a member for administration.
 
@@ -167,6 +170,5 @@ local runs use your own role; CI runs use the SP's role.
 
 | If revoked | Failure mode |
 | --- | --- |
-| SP-CI | PR validation and branch GC fail at the first `databricks` CLI call |
+| SP-CI | PR validation, branch GC and the daily drift probe fail at the first `databricks` CLI call (the probe opens the `schema-drift` "probe error" issue) |
 | SP-CD | cd-promotion fails before touching production (fail-closed) |
-| SP-MONITOR | The daily drift probe errors and opens the `schema-drift` "probe error" issue |
