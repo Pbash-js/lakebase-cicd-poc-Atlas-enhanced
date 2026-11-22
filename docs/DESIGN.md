@@ -187,7 +187,7 @@ Exit codes: 0 clean, 1 drift, 2 probe error. The scheduled workflow (`schema-dri
 ## 8. Identity and credentials
 
 - **Human/local:** `databricks auth login` OAuth profile; no tokens in config files.
-- **CI/CD:** service principals (SP-CI, SP-CD, SP-MONITOR) authenticating via OAuth M2M client credentials, minting a 1-hour workspace token per run, then a 1-hour Postgres credential from `generate-database-credential`. The Postgres password is never long-lived. Subject strings and the console steps: `docs/IDENTITIES.md`.
+- **CI/CD:** service principals (SP-CI, SP-CD) authenticating via OAuth M2M client credentials, minting a 1-hour workspace token per run, then a 1-hour Postgres credential from `generate-database-credential`. The Postgres password is never long-lived. Subject strings and the console steps: `docs/IDENTITIES.md`.
 - **Why not OIDC federation:** federation policies need account-level API, unavailable on Free Edition; OAuth M2M secrets work at workspace level. M2M is the implemented pattern.
 - **Atlas Pro:** CI uses one secret: `ATLAS_TOKEN` (for the atlas CLI license check), minted at portal.ariga.io; the binary is installed by `ariga/setup-atlas@v0`. A local `atlas login` session unlocks everything locally. The CLI session token is not accepted as `ATLAS_TOKEN`.
 
