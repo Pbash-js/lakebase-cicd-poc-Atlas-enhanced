@@ -4,7 +4,7 @@ STATUS: SP setup complete (principals, Lakebase roles, Postgres grants via
 the `app_pipeline` group). Credential switchover is ONE console step away:
 generate an OAuth secret per SP (below). Workflows run on the static
 workspace PAT today, split by scope: `DATABRICKS_TOKEN_CI` (repository
-secret) for PR and monitor jobs, `DATABRICKS_TOKEN` (an environment secret
+secret) for PR and monitor jobs, `DATABRICKS_TOKEN_CD` (an environment secret
 on every CD environment) for the CD deploy job only. A PR run can no longer
 read the deploy-capable token; the SP switchover replaces the values, not
 the workflow references.
@@ -48,20 +48,52 @@ work at workspace level on Free Edition, so M2M is the implemented pattern.
 The GitHub-side scoping is DONE (audit fix, 2026-10-30). When the SP secrets
 are generated, only the values change:
 
-1. `DATABRICKS_TOKEN` is an ENVIRONMENT secret on every CD environment
+1. `DATABRICKS_TOKEN_CD` is an ENVIRONMENT secret on every CD environment
    (`dev`, `qa`, `stage`, `production`); the CD job resolves it because it
    declares `environment: <deploy_env>`. stage/production additionally carry
-   required reviewers.
+   required reviewers. The workflow also exports it as the standard
+   `DATABRICKS_TOKEN` env var, which is what the Databricks CLI/SDK reads;
+   the SECRET name carries the `_CD` suffix, the CLI env var keeps the SDK
+   convention.
 2. `DATABRICKS_TOKEN_CI` is a repository secret for PR/monitor jobs (today:
    the same PAT value; after the switchover: the SP-CI token).
 3. The workflow references already point the right way: pr-validation.yml and
    schema-drift-monitor.yml read `secrets.DATABRICKS_TOKEN_CI`; the CD
-   promote job reads `secrets.DATABRICKS_TOKEN` (environment-scoped).
+   promote job reads `secrets.DATABRICKS_TOKEN_CD` (environment-scoped).
 
 Residual until the Lakebase project roles are split: all pipeline identities
 are members of `app_pipeline` (which owns the schema), so a leaked CI or
 monitor credential could still write to production. The real control is
 Lakebase project RBAC per identity, which needs the SP secrets first.
+
+## Interim: owner PAT until the SPs exist on the environment
+
+While the target workspace has no SP-CI/SP-CD, run the pipeline on a PAT
+minted from the owner identity. Zero workflow changes: the SP switchover
+later replaces secret VALUES only.
+
+1. Mint (30-day lifetime, shorter preferred):
+   ```
+   TOKEN=$(databricks auth token -p free-edition | awk '{print $1}')
+   curl -s -H "Authorization: Bearer $TOKEN" \
+     -d '{"lifetime_seconds": 2592000, "comment": "ci interim owner PAT"}' \
+     https://dbc-ebccb552-79f0.cloud.databricks.com/api/2.0/token/create
+   ```
+2. Place the PAT value (never through chat or a tool transcript; write it to
+   a scratch file, pipe it in, delete the file):
+   ```
+   gh secret set DATABRICKS_TOKEN_CI < pat.txt
+   for e in dev qa stage production; do gh secret set DATABRICKS_TOKEN_CD --env "$e" < pat.txt; done
+   # then remove the legacy name: gh secret delete DATABRICKS_TOKEN --env <e> (all four)
+   rm pat.txt
+   ```
+3. It works because the owner's Postgres role is a member of `app_pipeline`
+   (same ownership path the SPs use).
+4. Trade-off: a PAT is all-or-nothing, it carries the owner's full
+   entitlements. Compensating controls already in place: the CD token is
+   environment-scoped, stage/production require reviewers, CD fails closed.
+5. At switchover: rotate (delete the PAT, generate an OAuth secret per SP
+   per the console step above). Do not let the PAT outlive the SP pass.
 
 Identity map (client id → role):
 

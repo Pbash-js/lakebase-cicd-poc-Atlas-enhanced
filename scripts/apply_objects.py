@@ -1,5 +1,5 @@
 """Apply stateless code objects idempotently, in layer order.
-01_types -> 02_functions -> 03_procedures -> 04_views -> 05_triggers.
+types -> functions -> procedures -> views -> triggers.
 Every file must be safe to replay (CREATE OR REPLACE / DROP+CREATE).
 
 The WHOLE run is one transaction: objects applied before a failure are
@@ -26,7 +26,7 @@ from pathlib import Path
 
 import psycopg
 
-LAYER_ORDER = ["01_types", "02_functions", "03_procedures", "04_views", "05_triggers"]
+LAYER_ORDER = ["types", "functions", "procedures", "views", "triggers"]
 RETIREMENTS = "retirements.jsonl"
 
 
@@ -207,7 +207,7 @@ def main() -> int:
     for layer in LAYER_ORDER:
         d = root / layer
         if d.is_dir():
-            # recursive: nested folders (e.g. 03_procedures/Authz/) are
+            # recursive: nested folders (e.g. procedures/Authz/) are
             # organizational grouping; the SQL itself names the target schema
             files += sorted(p for p in d.glob("**/*.sql") if p.is_file())
 

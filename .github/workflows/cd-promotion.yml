@@ -35,7 +35,7 @@ jobs:
           #                   so this job holds no Databricks credentials at all
           # every host/token secret pair the config may reference; add one
           # line per new workspace (see config/environments.json header)
-          # DATABRICKS_HOST / DATABRICKS_TOKEN are declared in the promote job
+          # DATABRICKS_HOST / DATABRICKS_TOKEN_CD are declared in the promote job
         run: python3 scripts/resolve_env.py "$GITHUB_REF_NAME" cd
 
   promote:
@@ -44,7 +44,7 @@ jobs:
     # deploy gate: the GitHub environment named in config/environments.json.
     # Every environment maps to a GitHub environment (dev/qa have none on
     # purpose); stage/production carry required reviewers. The environment
-    # scoping is also what makes DATABRICKS_TOKEN an environment secret: only
+    # scoping is also what makes DATABRICKS_TOKEN_CD an environment secret: only
     # this job (never PR runs) can read the deploy-capable token.
     environment: ${{ needs.resolve.outputs.deploy_env }}
     permissions:
@@ -54,7 +54,8 @@ jobs:
       LAKEBASE_PROJECT: ${{ needs.resolve.outputs.project }}
       TARGET_BRANCH: ${{ needs.resolve.outputs.database }}
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      DATABRICKS_TOKEN_CD: ${{ secrets.DATABRICKS_TOKEN_CD }}   # deploy-capable token: env-scoped secret (CD suffix = CD jobs only)
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN_CD }}      # the Databricks CLI/SDK reads the standard env var name
       ATLAS_TOKEN: ${{ secrets.ATLAS_TOKEN }}   # atlas CLI license check (Pro)
     steps:
       - uses: actions/checkout@v4
@@ -107,7 +108,7 @@ jobs:
           version: 1.17.0
 
       - name: Install Python deps
-        run: pip3 install "psycopg[binary]==3.2.9" "pytest==8.3.5"
+        run: pip3 install "psycopg[binary]>=3.2.9,<4" "pytest==8.3.5"
 
       - name: Deploy Infrastructure Assets via DABs
         run: databricks bundle deploy -t "$WORKSPACE"
