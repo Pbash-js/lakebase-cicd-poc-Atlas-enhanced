@@ -216,12 +216,12 @@ Repository secrets:
 | Secret | Example |
 | --- | --- |
 | `DATABRICKS_HOST` | https://dbc-xxxxxxxx.cloud.databricks.com |
-| `DATABRICKS_TOKEN` | PAT or SP token with Lakebase access |
+| `DATABRICKS_TOKEN_CD` | PAT or SP token with Lakebase access (env-scoped, CD promote only; exported to the job as the standard `DATABRICKS_TOKEN` env var) |
 | `LAKEBASE_PROJECT` | core-app-db |
 | `DATABRICKS_PG_USER` | the Lakebase Postgres role that runs the pipeline |
 | `ATLAS_TOKEN` | Atlas Cloud API token for the atlas CLI license check (the CLI session token is NOT accepted, verified live) | portal.ariga.io |
 
-Auth today is the static `DATABRICKS_TOKEN`; the database password is still self-minted per run (below). The OIDC switchover (2 SPs, federation policies, subject strings) is specced in [docs/IDENTITIES.md](docs/IDENTITIES.md); blocked because federation policies are account-level API, beyond Free Edition.
+Auth today is the static `DATABRICKS_TOKEN_CD`; the database password is still self-minted per run (below). The OIDC switchover (2 SPs, federation policies, subject strings) is specced in [docs/IDENTITIES.md](docs/IDENTITIES.md); blocked because federation policies are account-level API, beyond Free Edition.
 
 ### Pro in CI: official apply + Lakebase credentials
 
@@ -258,6 +258,6 @@ Source: [atlasgo.io/guides/ci-platforms/github-versioned](https://atlasgo.io/gui
 | # | Change | Open item |
 | --- | --- | --- |
 | 1 | Ownership | Assign CODEOWNERS to a team instead of individuals; mark the `production` Lakebase branch protected (skipped for this POC by decision) |
-| 2 | OIDC credentials | Switch the static `DATABRICKS_TOKEN` to workload federation with the two designated SPs (SP-CI, SP-CD). SPs, Lakebase roles and Postgres grants are DONE (docs/IDENTITIES.md); SP-MONITOR is retired, its monitor workload runs under SP-CI. Blocked on federation policies, which need account-level API beyond Free Edition |
+| 2 | OIDC credentials | Switch the static `DATABRICKS_TOKEN_CD` to workload federation with the two designated SPs (SP-CI, SP-CD). SPs, Lakebase roles and Postgres grants are DONE (docs/IDENTITIES.md); SP-MONITOR is retired, its monitor workload runs under SP-CI. Blocked on federation policies, which need account-level API beyond Free Edition |
 
 Carried from v1, still open: RBAC as code, AI-impact review (AI Gateway), multi-environment promotion with the platform team.
