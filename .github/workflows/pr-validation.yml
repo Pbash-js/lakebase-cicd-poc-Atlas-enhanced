@@ -16,7 +16,10 @@ jobs:
       DATABRICKS_PG_USER: ${{ secrets.DATABRICKS_PG_USER }}
       ATLAS_TOKEN: ${{ secrets.ATLAS_TOKEN }}   # atlas CLI license check (Pro)
     permissions:
-      pull-requests: write # comments the generated SQL on the PR; no contents:write — CI never commits
+      contents: read        # checkout + git fetch gates: on a PRIVATE repo, an explicit
+                            # permissions block zeroes unspecified scopes, so omitting
+                            # this makes actions/checkout fail "could not read Username"
+      pull-requests: write  # comments the generated SQL on the PR; no contents:write — CI never commits
     steps:
       - uses: actions/checkout@v4
         with:
