@@ -63,6 +63,34 @@ are members of `app_pipeline` (which owns the schema), so a leaked CI or
 monitor credential could still write to production. The real control is
 Lakebase project RBAC per identity, which needs the SP secrets first.
 
+## Interim: owner PAT until the SPs exist on the environment
+
+While the target workspace has no SP-CI/SP-CD, run the pipeline on a PAT
+minted from the owner identity. Zero workflow changes: the SP switchover
+later replaces secret VALUES only.
+
+1. Mint (30-day lifetime, shorter preferred):
+   ```
+   TOKEN=$(databricks auth token -p free-edition | awk '{print $1}')
+   curl -s -H "Authorization: Bearer $TOKEN" \
+     -d '{"lifetime_seconds": 2592000, "comment": "ci interim owner PAT"}' \
+     https://dbc-ebccb552-79f0.cloud.databricks.com/api/2.0/token/create
+   ```
+2. Place the PAT value (never through chat or a tool transcript; write it to
+   a scratch file, pipe it in, delete the file):
+   ```
+   gh secret set DATABRICKS_TOKEN_CI < pat.txt
+   for e in dev qa stage production; do gh secret set DATABRICKS_TOKEN --env "$e" < pat.txt; done
+   rm pat.txt
+   ```
+3. It works because the owner's Postgres role is a member of `app_pipeline`
+   (same ownership path the SPs use).
+4. Trade-off: a PAT is all-or-nothing, it carries the owner's full
+   entitlements. Compensating controls already in place: the CD token is
+   environment-scoped, stage/production require reviewers, CD fails closed.
+5. At switchover: rotate (delete the PAT, generate an OAuth secret per SP
+   per the console step above). Do not let the PAT outlive the SP pass.
+
 Identity map (client id → role):
 
 ## The two identities

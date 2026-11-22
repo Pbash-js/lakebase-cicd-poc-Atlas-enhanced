@@ -26,8 +26,12 @@ def build(repo: Path, schema_only: bool = False) -> str:
     parts = [f.read_text(encoding="utf-8") for f in schema_files]
     if not schema_only:
         for layer in LAYER_ORDER:
+            # Order inside a layer: top-level files first, then nested
+            # folders alphabetically. Depth-based, so it does not change
+            # when folders are renamed.
             for f in sorted((repo / "db/objects" / layer).rglob("*.sql"),
-                            key=lambda f: (f.parent.name, f.name)):
+                            key=lambda f: (len(f.relative_to(repo / "db/objects" / layer).parts),
+                                           f.parent.name, f.name)):
                 parts.append(Path(f).read_text(encoding="utf-8"))
     return "\n\n".join(parts)
 

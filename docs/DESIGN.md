@@ -84,7 +84,7 @@ db/
 ├── schema/                  desired state: tables, columns, indexes, constraints, enums,
 │                            extensions (00_extensions.sql); CREATE SCHEMA marks a schema managed
 ├── objects/
-│   ├── 01_types/ .. 05_triggers/   code objects, one file each; nested folders allowed
+│   ├── types/ .. triggers/   code objects, one file each; nested folders allowed
 │   ├── retirements.jsonl    drop manifest (JSONL: stmt/reason/requested_in)
 │   └── drift_ignore.jsonl   reviewed out-of-band objects (JSONL: object/reason)
 ├── migrations/              Atlas-generated + atlas.sum (immutable once applied)
