@@ -65,7 +65,7 @@ jobs:
           version: 1.17.0
 
       - name: Install Python deps
-        run: pip3 install "psycopg[binary]==3.2.9" "pytest==8.3.5"
+        run: pip3 install "psycopg[binary]>=3.2.9,<4" "pytest==8.3.5"
 
       # Environment-aware rehearsal: the PR's BASE branch selects the environment
       # via config/environments.json (single source of truth); the rehearsal fork
